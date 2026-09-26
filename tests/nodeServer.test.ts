@@ -78,7 +78,7 @@ describe('Node production server', () => {
     expect((await fetch(`${base}/api/generate`)).status).toBe(405);
   });
   it('maps provider errors with no credential exposure', async () => {
-    const cases: [typeof providerMode, number, string][] = [['quota', 429, 'provider_rate_limited'], ['down', 502, 'provider_unavailable'], ['bad', 502, 'schema_invalid']];
+    const cases: [typeof providerMode, number, string][] = [['quota', 429, 'provider_rate_limited'], ['down', 502, 'provider_unavailable'], ['bad', 502, 'malformed_json']];
     for (const [mode, status, code] of cases) {
       providerMode = mode;
       const res = await gen();

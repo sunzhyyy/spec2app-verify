@@ -2,10 +2,13 @@
  * Vercel serverless function: POST /api/generate
  * Env (server-side only): AI_API_KEY, AI_BASE_URL, AI_MODEL. Keys are never returned or logged.
  */
-import { GenerationFailure, type GenerationErrorCode, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
+import { GenerationFailure, parseProviderEnvelope, type GenerationErrorCode, type ProviderEnvelope, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
 
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
+/** Output budget: DeepSeek's documented chat maximum; override with AI_MAX_TOKENS for models with larger limits. */
+const DEFAULT_MAX_TOKENS = 8192; // DeepSeek chat output ceiling; override with AI_MAX_TOKENS.
+const RETRYABLE = new Set<string>(['provider_empty_response', 'malformed_json', 'provider_output_truncated']);
 const STATUS: Record<string, number> = { timeout: 504, provider_timeout: 504, quota_exhausted: 429, provider_rate_limited: 429, invalid_request: 422, not_configured: 503 };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
@@ -78,43 +81,55 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     const fetchStarted = Date.now();
     const timeoutMs = Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS;
     // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
-    const controller = new AbortController();
-    let timeoutTriggered = false;
-    const timer = setTimeout(() => {
-      timeoutTriggered = true;
-      controller.abort();
-    }, timeoutMs);
-    let envelope: { choices?: { message?: { content?: unknown } }[] } | null;
-    try {
-      let res: Response;
+    const maxTokens = Math.floor(Number(env.AI_MAX_TOKENS)) > 0 ? Math.floor(Number(env.AI_MAX_TOKENS)) : DEFAULT_MAX_TOKENS;
+    /** One provider attempt with its own AbortController timer; the timer is always cleared. */
+    const attempt = async (strict: boolean) => {
+      const controller = new AbortController();
+      let timeoutTriggered = false;
+      const timer = setTimeout(() => {
+        timeoutTriggered = true;
+        controller.abort();
+      }, timeoutMs);
+      let envelope: ProviderEnvelope | null;
+      let upstreamStatus = 0;
       try {
-        res = await fetchImpl(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-          body: JSON.stringify({ model, messages: buildMessages(body), temperature: 0.4 }),
-          signal: controller.signal,
-        });
-      } catch (e) {
-        const diagnostic = { ...fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]), timeoutTriggered };
-        console.log({ stage: 'provider-fetch-exception', ...diagnostic });
-        if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
-        throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
+        let res: Response;
+        try {
+          res = await fetchImpl(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+            body: JSON.stringify({ model, messages: buildMessages(body, strict), temperature: 0.4, max_tokens: maxTokens, response_format: { type: 'json_object' } }),
+            signal: controller.signal,
+          });
+        } catch (e) {
+          const diagnostic = { ...fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]), timeoutTriggered };
+          console.log({ stage: 'provider-fetch-exception', ...diagnostic });
+          if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
+          throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
+        }
+        upstreamStatus = res.status;
+        if (!res.ok) {
+          const code = UPSTREAM[res.status] ?? 'provider_http_error';
+          throw new GenerationFailure(code, `The AI provider returned HTTP ${res.status}.`, true, { upstreamStatus: res.status });
+        }
+        envelope = (await res.json().catch(() => {
+          if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic: { timeoutTriggered } });
+          return null;
+        })) as typeof envelope;
+      } finally {
+        clearTimeout(timer);
       }
-      if (!res.ok) {
-        const code = UPSTREAM[res.status] ?? 'provider_http_error';
-        throw new GenerationFailure(code, `The AI provider returned HTTP ${res.status}.`, true, { upstreamStatus: res.status });
-      }
-      envelope = (await res.json().catch(() => {
-        if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic: { timeoutTriggered } });
-        return null;
-      })) as typeof envelope;
-    } finally {
-      clearTimeout(timer);
+      return parseProviderEnvelope(envelope, upstreamStatus);
+    };
+    let files;
+    try {
+      files = await attempt(false);
+    } catch (e) {
+      // One bounded retry for content-quality failures only; never auth, payment, rate-limit, network or timeout.
+      if (!(e instanceof GenerationFailure) || !RETRYABLE.has(e.code)) throw e;
+      console.log({ stage: 'provider-retry', reason: e.code, ...((e.extra?.diagnostic as object) ?? {}) });
+      files = await attempt(true);
     }
-    const content = envelope?.choices?.[0]?.message?.content;
-    if (content === undefined || content === null) throw new GenerationFailure('malformed_json', 'The AI provider returned an unexpected response envelope.', true);
-
-    const files = normalizeGeneratedContent(content);
     const successPayload = {
       response: {
         ...files,

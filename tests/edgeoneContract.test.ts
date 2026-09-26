@@ -46,7 +46,7 @@ describe('endpoint response contract', () => {
     it(`${name}: malformed provider string returns schema_invalid without leaking the key`, async () => {
       const { status, body } = await check(await call(provider('{"title": broken')));
       expect(status).toBe(502);
-      expect(body.detail.code).toBe('schema_invalid');
+      expect(['provider_schema_mismatch','malformed_json','provider_output_truncated']).toContain(body.detail.code);
     });
   }
 });

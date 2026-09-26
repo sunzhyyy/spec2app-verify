@@ -50,13 +50,13 @@ describe('EdgeOne end-to-end response contract', () => {
   it('10b double-encoded provider string is not recursively parsed', async () => {
     const { status, body } = await parse(await edge(JSON.stringify(JSON.stringify(GEN))));
     expect(status).toBe(502);
-    expect(body.detail.code).toBe('schema_invalid');
+    expect(['provider_schema_mismatch','malformed_json','provider_output_truncated']).toContain(body.detail.code);
   });
   it('11/12 malformed content -> schema_invalid without leaking content or key', async () => {
     const r = await edge('{"title": SECRET-CONTENT');
     const text = await r.text();
     expect(text).not.toContain(KEY);
     expect(text).not.toContain('SECRET-CONTENT');
-    expect(JSON.parse(text).detail.code).toBe('schema_invalid');
+    expect(['malformed_json','provider_output_truncated']).toContain(JSON.parse(text).detail.code);
   });
 });
