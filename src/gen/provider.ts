@@ -178,6 +178,42 @@ export function parseDiagnostic(upstreamStatus: number, content: unknown, finish
   };
 }
 
+/** Safe type name: object, array, string, null, number, boolean, undefined... */
+const typeName = (v: unknown) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const keysOf = (v: unknown) => (isObj(v) ? Object.keys(v).map((k) => k.replace(/[^\w.-]/g, '').slice(0, 40)).sort().slice(0, 20) : []);
+
+/** Structure-only metadata about a decoded provider response. Never includes any field values. */
+export function envelopeShape(envelope: unknown) {
+  const obj = isObj(envelope) ? envelope : null;
+  const choices = obj?.choices;
+  const first = Array.isArray(choices) ? choices[0] : undefined;
+  const message = isObj(first) ? first.message : undefined;
+  const msg = isObj(message) ? message : null;
+  const id = typeof obj?.id === 'string' ? obj.id : '';
+  const prefix = /^([a-z]{2,20})-/i.exec(id)?.[1] ?? null;
+  return {
+    responseJsonType: typeName(envelope),
+    topLevelKeys: keysOf(obj),
+    objectHasChoices: !!obj && 'choices' in obj,
+    choicesType: obj && 'choices' in obj ? typeName(choices) : 'missing',
+    choicesCount: Array.isArray(choices) ? choices.length : null,
+    firstChoiceType: Array.isArray(choices) && choices.length > 0 ? typeName(first) : 'missing',
+    firstChoiceKeys: keysOf(first),
+    messagePresent: isObj(first) && 'message' in first && message !== undefined && message !== null,
+    messageType: isObj(first) && 'message' in first ? typeName(message) : 'missing',
+    messageKeys: keysOf(msg),
+    contentType: msg && 'content' in msg ? typeName(msg.content) : 'missing',
+    reasoningContentPresent: !!msg && msg.reasoning_content !== undefined && msg.reasoning_content !== null,
+    textFieldPresent: (!!obj && 'text' in obj) || (isObj(first) && 'text' in first),
+    outputFieldPresent: !!obj && 'output' in obj,
+    errorFieldPresent: !!obj && 'error' in obj,
+    errorType: obj && 'error' in obj ? typeName(obj.error) : 'missing',
+    idPrefix: prefix ? prefix.toLowerCase() : null,
+    modelPresent: typeof obj?.model === 'string' && obj.model.length > 0,
+  };
+}
+
 /** Removes only a single outer ```json ... ``` or ``` ... ``` fence around the whole string. */
 export function stripOuterFence(text: string): string {
   const t = text.trim();
@@ -189,17 +225,21 @@ export function stripOuterFence(text: string): string {
  * Stage A: validate the OpenAI-compatible envelope. Stage B: parse message.content as the app json object and validate it.
  * Client-visible messages never contain provider output.
  */
-export function parseProviderEnvelope(envelope: unknown, upstreamStatus: number): ParsedGeneration {
+export function parseProviderEnvelope(envelope: unknown, upstreamStatus: number, request: Record<string, unknown> = {}): ParsedGeneration {
   const choice = (envelope as ProviderEnvelope | null)?.choices?.[0];
   const content = choice?.message?.content;
   const finishReason = choice?.finish_reason;
   const diag = (errName: string | null = null) => ({ diagnostic: parseDiagnostic(upstreamStatus, content, finishReason, errName) });
 
   if (!envelope || typeof envelope !== 'object' || !Array.isArray((envelope as ProviderEnvelope).choices) || !choice?.message || content === undefined || content === null) {
-    throw new GenerationFailure('provider_invalid_response', 'The AI provider returned an unexpected response envelope.', true, diag());
+    const d = { diagnostic: { ...parseDiagnostic(upstreamStatus, content, finishReason), ...envelopeShape(envelope), request } };
+    console.log({ stage: 'provider-invalid-envelope', ...d.diagnostic });
+    throw new GenerationFailure('provider_invalid_response', 'The AI provider returned an unexpected response envelope.', true, d);
   }
   if (content && typeof content === 'object' && !Array.isArray(content)) return validateProviderObject(content as Record<string, unknown>, diag);
-  if (typeof content !== 'string') throw new GenerationFailure('provider_invalid_response', 'The AI provider returned non-text message content.', true, diag());
+  if (typeof content !== 'string') {
+    throw new GenerationFailure('provider_invalid_response', 'The AI provider returned non-text message content.', true, { diagnostic: { ...diag().diagnostic, ...envelopeShape(envelope), request } });
+  }
   if (!content.trim()) throw new GenerationFailure('provider_empty_response', 'The AI provider returned empty message content.', true, diag());
 
   const text = stripOuterFence(content);

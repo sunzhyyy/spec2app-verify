@@ -39,6 +39,23 @@ export function sanitizeMessage(message: unknown, secrets: (string | undefined)[
   return m.slice(0, 200);
 }
 
+/** Safe request metadata: configuration only, never messages, prompt or credentials. */
+export function requestMeta(cfg: Record<string, unknown>, url: string) {
+  let requestUrl = 'invalid';
+  try { const u = new URL(url); requestUrl = `${u.origin}${u.pathname}`; } catch { /* invalid base url */ }
+  const rf = cfg.response_format as { type?: unknown } | undefined;
+  const th = cfg.thinking as { type?: unknown } | undefined;
+  return {
+    requestUrl,
+    requestedModel: typeof cfg.model === 'string' ? cfg.model.slice(0, 80) : null,
+    streamValue: typeof cfg.stream === 'boolean' ? cfg.stream : null,
+    responseFormatType: typeof rf?.type === 'string' ? rf.type : null,
+    ...(th && typeof th.type === 'string' ? { thinkingType: th.type } : {}),
+    maxTokensPresent: typeof cfg.max_tokens === 'number',
+    maxTokensValue: typeof cfg.max_tokens === 'number' ? cfg.max_tokens : null,
+  };
+}
+
 /** Safe fetch-exception diagnostic: names, network code, host/path, elapsed. No key, headers, prompt or body. */
 export function fetchDiagnostic(e: unknown, url: string, elapsedMs: number, secrets: (string | undefined)[]) {
   const err = (e ?? {}) as { name?: unknown; message?: unknown; cause?: { code?: unknown } };
@@ -83,6 +100,7 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
     const maxTokens = Math.floor(Number(env.AI_MAX_TOKENS)) > 0 ? Math.floor(Number(env.AI_MAX_TOKENS)) : DEFAULT_MAX_TOKENS;
     /** One provider attempt with its own AbortController timer; the timer is always cleared. */
+    const requestConfig = { model, temperature: 0.4, max_tokens: maxTokens, response_format: { type: 'json_object' as const } };
     const attempt = async (strict: boolean) => {
       const controller = new AbortController();
       let timeoutTriggered = false;
@@ -98,7 +116,7 @@ export async function handleGenerate(request: Request, env: Record<string, strin
           res = await fetchImpl(url, {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-            body: JSON.stringify({ model, messages: buildMessages(body, strict), temperature: 0.4, max_tokens: maxTokens, response_format: { type: 'json_object' } }),
+            body: JSON.stringify({ ...requestConfig, messages: buildMessages(body, strict) }),
             signal: controller.signal,
           });
         } catch (e) {
@@ -119,7 +137,7 @@ export async function handleGenerate(request: Request, env: Record<string, strin
       } finally {
         clearTimeout(timer);
       }
-      return parseProviderEnvelope(envelope, upstreamStatus);
+      return parseProviderEnvelope(envelope, upstreamStatus, requestMeta(requestConfig, url));
     };
     let files;
     try {
