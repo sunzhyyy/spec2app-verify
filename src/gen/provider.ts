@@ -20,6 +20,7 @@ Rules:
 
 export type GenerationErrorCode =
   | 'timeout'
+  | 'provider_timeout'
   | 'quota_exhausted'
   | 'provider_unauthorized'
   | 'provider_payment_required'

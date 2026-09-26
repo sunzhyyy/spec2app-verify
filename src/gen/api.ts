@@ -30,16 +30,26 @@ function toFailure(e: unknown): GenerationFailure {
 }
 
 async function fetchServerless(input: GenerateInput): Promise<unknown> {
-  const res = await fetch('/api/generate', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  const isJson = /application\/json/i.test(res.headers.get('content-type') ?? '');
-  const body = isJson ? await res.json().catch(() => null) : await res.text();
-  if (!res.ok) throw { response: { data: body, status: res.status }, message: `HTTP ${res.status}` };
-  return body;
+  // Portable timeout (no AbortSignal.timeout dependency).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      signal: controller.signal,
+    });
+    const isJson = /application\/json/i.test(res.headers.get('content-type') ?? '');
+    const body = isJson ? await res.json().catch(() => null) : await res.text();
+    if (!res.ok) throw { response: { data: body, status: res.status }, message: `HTTP ${res.status}` };
+    return body;
+  } catch (e) {
+    if (controller.signal.aborted) throw { message: 'timeout' };
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function requestGeneration(input: GenerateInput): Promise<GenerationResponse> {

@@ -6,7 +6,7 @@ import { GenerationFailure, type GenerationErrorCode, buildMessages, normalizeGe
 
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
-const STATUS: Record<string, number> = { timeout: 504, quota_exhausted: 429, provider_rate_limited: 429, invalid_request: 422, not_configured: 503 };
+const STATUS: Record<string, number> = { timeout: 504, provider_timeout: 504, quota_exhausted: 429, provider_rate_limited: 429, invalid_request: 422, not_configured: 503 };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 const fail = (e: GenerationFailure) => json(STATUS[e.code] ?? 502, { detail: { code: e.code, message: e.message, providerInvoked: e.providerInvoked, ...(e.extra ?? {}) } });
@@ -76,27 +76,41 @@ export async function handleGenerate(request: Request, env: Record<string, strin
 
     const url = providerUrl(base);
     const fetchStarted = Date.now();
-    let res: Response;
+    const timeoutMs = Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS;
+    // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
+    const controller = new AbortController();
+    let timeoutTriggered = false;
+    const timer = setTimeout(() => {
+      timeoutTriggered = true;
+      controller.abort();
+    }, timeoutMs);
+    let envelope: { choices?: { message?: { content?: unknown } }[] } | null;
     try {
-      res = await fetchImpl(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model, messages: buildMessages(body), temperature: 0.4 }),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-    } catch (e) {
-      const name = (e as Error).name;
-      if (name === 'TimeoutError' || name === 'AbortError') throw new GenerationFailure('timeout', 'The AI provider timed out.', true);
-      const diagnostic = fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]);
-      console.log({ stage: 'provider-fetch-exception', ...diagnostic });
-      throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
+      let res: Response;
+      try {
+        res = await fetchImpl(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+          body: JSON.stringify({ model, messages: buildMessages(body), temperature: 0.4 }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        const diagnostic = { ...fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]), timeoutTriggered };
+        console.log({ stage: 'provider-fetch-exception', ...diagnostic });
+        if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
+        throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
+      }
+      if (!res.ok) {
+        const code = UPSTREAM[res.status] ?? 'provider_http_error';
+        throw new GenerationFailure(code, `The AI provider returned HTTP ${res.status}.`, true, { upstreamStatus: res.status });
+      }
+      envelope = (await res.json().catch(() => {
+        if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic: { timeoutTriggered } });
+        return null;
+      })) as typeof envelope;
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) {
-      const code = UPSTREAM[res.status] ?? 'provider_http_error';
-      throw new GenerationFailure(code, `The AI provider returned HTTP ${res.status}.`, true, { upstreamStatus: res.status });
-    }
-
-    const envelope = (await res.json().catch(() => null)) as { choices?: { message?: { content?: unknown } }[] } | null;
     const content = envelope?.choices?.[0]?.message?.content;
     if (content === undefined || content === null) throw new GenerationFailure('malformed_json', 'The AI provider returned an unexpected response envelope.', true);
 
