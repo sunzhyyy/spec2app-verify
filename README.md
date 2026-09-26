@@ -61,3 +61,10 @@ Framework: Vite (React 18 + TS); functions: Node runtime (`api/generate.ts`). In
 - Generation takes 30–120 s, and the output quality depends on the model.
 - Generated pages cannot make network requests or load remote scripts.
 - Persistence is per browser.
+
+## Node.js deployment (Zeabur or any Node host)
+
+- Server entry: `server/index.ts` (built to `dist-server/index.js`). It serves `dist`, exposes `POST /api/generate` through the same handler as Vercel/EdgeOne (`api/generate.ts`), answers `GET /healthz`, and falls back to `dist/index.html` for non-API routes.
+- Build command: `pnpm install --frozen-lockfile && pnpm run build`. Start command: `pnpm start` (`node dist-server/index.js`).
+- Environment: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` (server-side secrets) and `VITE_GENERATION_TARGET=node` (build-time, not a secret; must be present during `pnpm run build`).
+- Port and host: listens on `0.0.0.0` using the platform-assigned `PORT`; falls back to 3000 only when `PORT` is absent. The API key is never logged or returned.

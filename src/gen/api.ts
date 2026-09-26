@@ -4,13 +4,8 @@ import { GenerationFailure, unwrapGenerationBody, type GenerationErrorCode } fro
 
 const client = createClient();
 const TIMEOUT_MS = 200_000;
-/** Build-time switch (not a secret): 'edgeone' or 'vercel' use the same-origin /api/generate function, otherwise the Atoms Cloud endpoint. */
-const EDGEONE_HOST = /\.(edgeone\.app|edgeone\.run|edgeone\.cool)$/i;
-export function resolveTarget(flag: string | undefined, hostname: string): 'serverless' | 'atoms' {
-  if (flag === 'vercel' || flag === 'edgeone') return 'serverless';
-  if (flag !== 'atoms' && (EDGEONE_HOST.test(hostname) || /\.vercel\.app$/i.test(hostname))) return 'serverless';
-  return 'atoms';
-}
+import { resolveTarget } from './api-target';
+export { resolveTarget };
 const TARGET = resolveTarget(import.meta.env.VITE_GENERATION_TARGET, typeof window !== 'undefined' ? window.location.hostname : '');
 
 export { unwrapGenerationBody };
