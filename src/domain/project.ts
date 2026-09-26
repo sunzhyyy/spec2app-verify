@@ -247,6 +247,16 @@ export const RepairAttemptSchema = z.object({
   outcome: z.enum(REPAIR_OUTCOMES),
   stopReason: z.string().nullable(),
   createdAt: z.string(),
+  /** Evidence stages, deliberately separate: in-scope proposal ≠ valid candidate ≠ verified ≠ stable. */
+  proposalAccepted: z.boolean().default(true),
+  candidateStructurallyValid: z.boolean().nullable().default(null),
+  missingCapabilities: z.array(z.string()).default([]),
+  candidateVerificationPassed: z.boolean().nullable().default(null),
+  promotedToStable: z.boolean().default(false),
+  remainingFailedTestIds: z.array(z.string()).default([]),
+  remainingBlockedTestIds: z.array(z.string()).default([]),
+  lastStableVersionId: z.string().nullable().default(null),
+  suggestedNextAction: z.string().nullable().default(null),
 });
 export type RepairAttempt = z.infer<typeof RepairAttemptSchema>;
 

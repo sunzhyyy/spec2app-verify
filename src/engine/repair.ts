@@ -12,7 +12,7 @@ import { formatZodError, type ActionResult } from './actions';
 export const DETERMINISTIC_REPAIR_LABEL = 'Deterministic Repair Mode – no model call';
 
 /** Mandatory core regression set, re-run after every applied repair. */
-export const CORE_REGRESSION_IDS = ['VC-01', 'VC-03', 'VC-04', 'VC-05', 'VC-06', 'VC-07', 'VC-16', 'VC-17', 'VC-20', 'VC-21'];
+export const CORE_REGRESSION_IDS = ['VC-01', 'VC-03', 'VC-04', 'VC-05', 'VC-06', 'VC-07', 'VC-16', 'VC-17', 'VC-20', 'VC-21', 'VC-22'];
 
 /** Definition-path categories each check depends on; used for scope, signatures and affected-test selection. */
 export const CHECK_PATHS: Record<string, string[]> = {
@@ -172,6 +172,20 @@ function applyChanges(def: AppDefinition, changes: RepairProposal['proposedChang
 
 export type ProposalCheck = { ok: true; proposal: RepairProposal; definition: AppDefinition } | { ok: false; error: string };
 
+/** Full capability invariants for a definition (not a delta). An empty result is required for stable promotion. */
+export function missingCapabilities(d: AppDefinition, tests: AcceptanceTest[]): string[] {
+  return [
+    ...REQUIRED.fields.filter((k) => !d.entity.fields.some((f) => f.key === k && f.required)).map((k) => `field ${k}`),
+    ...REQUIRED.actions.filter((a) => !d.actions.includes(a as never)).map((a) => `action ${a}`),
+    ...REQUIRED.filters.filter((f) => !d.filters.some((x) => x.field === f)).map((f) => `filter ${f}`),
+    ...REQUIRED.metrics.filter((m) => !d.metrics.some((x) => x.id === m)).map((m) => `metric ${m}`),
+    ...['metrics', 'filters', 'form', 'table'].filter((x) => !d.layout.sections.includes(x as never)).map((x) => `section ${x}`),
+    ...tests.filter((t) => !d.acceptanceTestRefs.includes(t.id)).map((t) => `test reference ${t.id}`),
+    ...(d.emptyState?.title ? [] : ['empty state']),
+    ...(d.noResults?.title ? [] : ['no-results state']),
+  ];
+}
+
 /** Rejects any proposal outside the repair scope before anything is applied. */
 export function validateProposal(p: Project, raw: unknown, mode: RepairProposal['repairMode'], checks: VerificationCheck[] = DEFAULT_CHECKS): ProposalCheck {
   const no = (error: string): ProposalCheck => ({ ok: false, error });
@@ -194,15 +208,11 @@ export function validateProposal(p: Project, raw: unknown, mode: RepairProposal[
   }
   const def = AppDefinitionSchema.safeParse(applyChanges(p.applicationDefinition!, pr.proposedChanges));
   if (!def.success) return no(`Repaired definition fails schema validation: ${formatZodError(def.error, 3)}`);
-  const missingIn = (d: AppDefinition) => [
-    ...REQUIRED.fields.filter((k) => !d.entity.fields.some((f) => f.key === k && f.required)).map((k) => `field ${k}`),
-    ...REQUIRED.actions.filter((a) => !d.actions.includes(a as never)).map((a) => `action ${a}`),
-    ...REQUIRED.filters.filter((f) => !d.filters.some((x) => x.field === f)).map((f) => `filter ${f}`),
-    ...REQUIRED.metrics.filter((m) => !d.metrics.some((x) => x.id === m)).map((m) => `metric ${m}`),
-  ];
   const d = def.data;
-  const before = new Set(missingIn(p.applicationDefinition!));
-  const missing = missingIn(d).filter((m) => !before.has(m));
+  // Incremental repair may leave capabilities missing that were already missing, but it may never remove one.
+  // The candidate still cannot become stable until missingCapabilities() is empty (enforced in reverifyRepair).
+  const before = new Set(missingCapabilities(p.applicationDefinition!, p.acceptanceTests));
+  const missing = missingCapabilities(d, p.acceptanceTests).filter((m) => !before.has(m) && !m.startsWith('test reference'));
   if (missing.length) return no(`Proposal removes required ${missing.join(', ')}.`);
   if (d.acceptanceTestRefs.join() !== p.acceptanceTests.map((t) => t.id).join()) return no('Proposal changes acceptance-test references away from the approved set.');
   return { ok: true, proposal: pr, definition: d };
@@ -286,6 +296,8 @@ export function applyRepair(p: Project, now: string, checks: VerificationCheck[]
     failedCountBefore: failed.failed.length, failedCountAfter: null, blockedCountBefore: failed.blocked.length, blockedCountAfter: null,
     changedDefinitionPaths: changed, affectedTestIds: [...failed.failed, ...failed.blocked], regressionTestIds: [], regressedTestIds: [],
     outcome: 'pending_reverification', stopReason: null, createdAt: now,
+    proposalAccepted: true, candidateStructurallyValid: null, missingCapabilities: [], candidateVerificationPassed: null, promotedToStable: false,
+    remainingFailedTestIds: [], remainingBlockedTestIds: [], lastStableVersionId: p.stableVersionId, suggestedNextAction: null,
   };
   return {
     ok: true,
@@ -341,10 +353,14 @@ export function reverifyRepair(p: Project, now: string, checks: VerificationChec
   const beforeBad = attempt.failedCountBefore + attempt.blockedCountBefore;
   const afterBad = after.failed.length + after.blocked.length;
   const fixedOne = attempt.affectedTestIds.some((id) => status.get(id) === 'passed');
-  const allPass = report.passed && regressed.length === 0;
+  const schemaOk = AppDefinitionSchema.safeParse(p.applicationDefinition).success;
+  const missingCaps = p.applicationDefinition ? missingCapabilities(p.applicationDefinition, p.acceptanceTests) : ['definition'];
+  const structurallyValid = schemaOk && missingCaps.length === 0;
+  const allPass = report.passed && regressed.length === 0 && structurallyValid;
   let outcome: RepairAttempt['outcome'];
   let stopReason: string | null = null;
   if (allPass) outcome = 'repaired';
+  else if (report.passed && !structurallyValid) { outcome = 'no_improvement'; stopReason = `Candidate is missing required capabilities: ${missingCaps.join(', ')}.`; }
   else if (regressed.length) { outcome = 'regression'; stopReason = `Repair introduced a regression in ${regressed.join(', ')}.`; }
   else if (sigAfter === attempt.failureSignatureBefore) { outcome = 'repeated_failure'; stopReason = 'The same failure signature repeated without improvement.'; }
   else if (!(afterBad < beforeBad || fixedOne)) { outcome = 'no_improvement'; stopReason = 'The number of failed or blocked checks did not improve.'; }
@@ -353,6 +369,12 @@ export function reverifyRepair(p: Project, now: string, checks: VerificationChec
   const done: RepairAttempt = {
     ...attempt, reverificationReportId: report.id, failureSignatureAfter: sigAfter, failedCountAfter: after.failed.length, blockedCountAfter: after.blocked.length,
     regressionTestIds: selection.map((s) => s.testId).filter((id) => CORE_REGRESSION_IDS.includes(id)), regressedTestIds: regressed, outcome, stopReason,
+    candidateStructurallyValid: structurallyValid, missingCapabilities: missingCaps, candidateVerificationPassed: report.passed && regressed.length === 0,
+    promotedToStable: allPass, remainingFailedTestIds: after.failed, remainingBlockedTestIds: after.blocked,
+    lastStableVersionId: allPass ? p.currentVersionId : p.stableVersionId,
+    suggestedNextAction: allPass ? null : stopReason
+      ? 'Manual action: return to test editing, review the approved requirement, and generate a new baseline.'
+      : 'Review and apply one more deliberate repair for the remaining checks.',
   };
   const workflowStatus = allPass ? 'verified' : stopReason ? 'stopped' : 'verification_failed';
   return {

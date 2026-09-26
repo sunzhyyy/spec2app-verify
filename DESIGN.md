@@ -27,3 +27,4 @@ Candidate → verify → stable (pass) or verification_failed (candidate kept, s
 - Failure signature: `F:<failed ids>|B:<blocked ids>|P:<definition path categories>`. It contains no timestamps or IDs.
 - Repair is always a deliberate review: propose → review → apply → reverify. Repairs are never applied automatically, and they never promote a version unless targeted reverification passes with no regressions.
 - New check VC-22 checks that the required actions, filters, layout sections and empty/no-results states are present.
+- Stage 4.1: proposal scope validation (no removal of existing capabilities) is separate from the promotion gate (full invariants on the final definition). VC-22 is part of the core regression set.

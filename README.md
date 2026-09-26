@@ -60,3 +60,12 @@ Proposals are rejected before they are applied if any of the following is true: 
 After reverification, each repair gets one of these results: `repaired`, `improved`, `no_improvement`, `repeated_failure` (same failure signature), `regression`, or `limit_reached`. Every result except `repaired` and `improved` stops the workflow. Limits: 2 repair attempts per approved baseline generation and 5 AI-assisted calls per project. An optional HTTP provider (`requestHttpRepair`) sends only a compact context and no secrets. Repair history is saved to localStorage and included in the validated JSON export (schema v2, `repair` section).
 
 Tests: `tests/repair.test.ts` covers scenarios A–E: constraint repair, bounded stop, regression, test immutability, and malformed or unavailable provider output.
+
+### Stage 4.1 – Repair safety invariants
+
+- Accepting a repair proposal only means it is within repair scope. It does **not** mean the candidate is valid or stable.
+- Incremental repair candidates may remain incomplete or failing. They stay `candidate`, and `stableVersionId` does not change.
+- Stable promotion requires all of the following: `AppDefinitionSchema` validity, complete capability invariants (`missingCapabilities()` is empty: fields, actions, filters, metrics, layout sections, test references, empty and no-results states), VC-22, and every selected affected and core-regression check passing.
+- Each export attempt records `proposalAccepted`, `candidateStructurallyValid`, `candidateVerificationPassed` and `promotedToStable` separately. Stop reports also include the remaining failed and blocked checks, the last stable version and a suggested next action.
+- A maximum of two repairs can be applied per approved baseline. The public Demo uses deterministic repair with no model call.
+- The browser-level repair interaction has not been validated manually. Coverage comes from automated tests (`tests/repair.test.ts`, `tests/repairSafety.test.ts`).
