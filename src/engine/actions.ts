@@ -166,7 +166,9 @@ export function returnToTestEditing(p: Project, now: string): ActionResult {
       testsApprovedAt: null,
       applicationDefinition: null,
       currentVersionId: null,
-      versions: p.versions.map((v) => (v.id === p.currentVersionId && v.status === 'candidate' ? { ...v, status: 'invalidated' } : v)),
+      versions: p.versions.map((v) =>
+        v.id === p.currentVersionId && v.lifecycleStatus === 'candidate' ? { ...v, verificationStatus: 'invalidated' as const } : v,
+      ),
     }),
     notice: 'Tests unlocked. The generated application was invalidated; approve the tests again to regenerate.',
   };
@@ -208,12 +210,13 @@ export function generate(p: Project, now: string, produce: DefinitionProducer = 
         ...p.versions,
         {
           id: versionId,
-          number: versionNumber,
+          parentVersionId: p.stableVersionId,
           createdAt: now,
-          status: 'candidate',
-          testsApprovedAt: p.testsApprovedAt,
+          reason: `Generated from ${approvedIds.length} tests approved at ${p.testsApprovedAt}`,
+          applicationDefinition: parsed.data,
           acceptanceTestIds: approvedIds,
-          definition: parsed.data,
+          verificationStatus: 'pending',
+          lifecycleStatus: 'candidate',
         },
       ],
     }),

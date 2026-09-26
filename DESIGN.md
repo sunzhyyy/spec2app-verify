@@ -17,3 +17,6 @@ An engineering workbench that is calm, dense and trustworthy, not a marketing pa
 
 ## Media
 No imagery. This is an operational tool.
+
+## Verification & persistence design
+Candidate → verify → stable (pass) or verification_failed (candidate kept, stable unchanged). Reports are append-only and evidence-based. Storage is versioned with a migration boundary; reset is project-scoped. Exports are Zod-validated and secret-free.

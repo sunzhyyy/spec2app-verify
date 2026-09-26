@@ -10,7 +10,9 @@ import { DEMO_MODE_LABEL } from '@/engine/demo';
 import * as A from '@/engine/actions';
 import { ConfirmDialog } from '@/renderer/ConfirmDialog';
 import { TrackerRenderer } from '@/renderer/TrackerRenderer';
-import { loadStore, saveStore } from '@/store/projects';
+import { loadStore, resetStore, saveStore } from '@/store/projects';
+import { verifyProject } from '@/engine/verify';
+import { buildExport, exportFilename } from '@/engine/export';
 
 const now = () => new Date().toISOString();
 const TEXT_KEYS: (keyof AcceptanceTest)[] = ['title', 'requirementReference', 'precondition', 'action', 'expectedResult'];
@@ -18,11 +20,29 @@ const TEXT_KEYS: (keyof AcceptanceTest)[] = ['title', 'requirementReference', 'p
 export default function Index() {
   const initial = useMemo(() => loadStore(localStorage), []);
   const [projects, setProjects] = useState<Project[]>(initial.projects);
-  const [selectedId, setSelectedId] = useState<string | null>(initial.selectedId);
+  const [selectedId, setSelectedId] = useState<string | null>(initial.selectedProjectId);
   const [message, setMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(
-    initial.dropped ? { kind: 'error', text: `${initial.dropped} invalid stored project(s) were ignored.` } : null,
+    initial.warning ? { kind: 'error', text: initial.warning } : null,
   );
   const [confirmUnlock, setConfirmUnlock] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const doReset = () => {
+    const n = resetStore(localStorage);
+    setProjects([]);
+    setSelectedId(null);
+    setConfirmReset(false);
+    setMessage({ kind: 'info', text: `Spec2App Verify data cleared (${n} key(s)). Other browser storage was not touched.` });
+  };
+  const doExport = (p: Project) => {
+    const e = buildExport(p, now());
+    if ('error' in e) return setMessage({ kind: 'error', text: e.error });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([e.json], { type: 'application/json' }));
+    a.download = exportFilename(p);
+    a.click();
+    URL.revokeObjectURL(a.href);
+    setMessage({ kind: 'info', text: `Exported ${a.download} (validated).` });
+  };
   useEffect(() => saveStore(localStorage, projects, selectedId), [projects, selectedId]);
 
   const project = projects.find((p) => p.id === selectedId) ?? null;
@@ -60,6 +80,8 @@ export default function Index() {
               </button>
             ))}
           </nav>
+          <Button variant="outline" size="sm" className="w-full" onClick={() => setConfirmReset(true)}>Reset Spec2App data</Button>
+          <p className="text-xs text-muted-foreground">Data is stored only in this browser (localStorage). It is not synced across devices.</p>
         </aside>
         <main className="min-w-0 flex-1 space-y-6 p-4">
           {message && (
@@ -78,7 +100,9 @@ export default function Index() {
                 <div className="flex flex-wrap items-center gap-2">
                   <Input aria-label="Project name" className="max-w-xs" value={project.name} onChange={(e) => apply({ ok: true, project: { ...project, name: e.target.value || 'Untitled', updatedAt: now() } })} />
                   <Badge>{STATUS_LABELS[project.workflowStatus]}</Badge>
-                  {project.currentVersionId && <Badge variant="outline">v{project.versions.length} candidate</Badge>}
+                  <Badge variant="outline">Current: {project.currentVersionId ? `${project.currentVersionId} (${project.versions.find((v) => v.id === project.currentVersionId)?.lifecycleStatus})` : 'none'}</Badge>
+                  <Badge variant="outline">Stable: {project.stableVersionId ?? 'none'}</Badge>
+                  <Button size="sm" variant="outline" onClick={() => doExport(project)}>Export JSON</Button>
                 </div>
                 <Label htmlFor="req">1. Requirement</Label>
                 <Textarea id="req" rows={4} value={project.originalRequirement} disabled={project.workflowStatus !== 'draft'} onChange={(e) => apply(A.setRequirement(project, e.target.value, now()))} />
@@ -144,6 +168,39 @@ export default function Index() {
                   <TrackerRenderer key={project.currentVersionId ?? ''} definition={project.applicationDefinition} records={project.applicationRecords} onChange={(r) => apply(A.updateRecords(project, r, now()))} />
                 </section>
               )}
+
+              {(project.applicationDefinition || project.versions.length > 0) && (
+                <section className="space-y-3 rounded-lg border p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="font-semibold">5. Deterministic verification</h2>
+                    <Button disabled={!project.applicationDefinition} onClick={() => apply(verifyProject(project, now()))}>Run verification</Button>
+                  </div>
+                  <ul className="space-y-1 text-sm">
+                    {project.versions.map((v) => (
+                      <li key={v.id}>• <b>{v.id}</b> – {v.lifecycleStatus}, verification {v.verificationStatus}, parent {v.parentVersionId ?? 'none'}</li>
+                    ))}
+                  </ul>
+                  {(() => {
+                    const rep = project.verificationReports.at(-1);
+                    if (!rep) return <p className="text-sm text-muted-foreground">No verification run yet.</p>;
+                    const c = (s: string) => rep.results.filter((r) => r.status === s).length;
+                    return (
+                      <div className="space-y-2">
+                        <p className="text-sm">Report {rep.id} for {rep.versionId}: <b>{c('passed')} passed</b>, {c('failed')} failed, {c('blocked')} blocked</p>
+                        {rep.results.map((r) => (
+                          <div key={r.testId} className="rounded border p-2 text-xs">
+                            <Badge variant={r.status === 'passed' ? 'default' : r.status === 'failed' ? 'destructive' : 'secondary'}>{r.status}</Badge>{' '}
+                            <b>{r.testId} {r.title}</b>
+                            <p>Expected: {r.expectedResult}</p>
+                            <p>Observed: {r.observedResult}</p>
+                            <p className="text-muted-foreground">Evidence: {r.evidence}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </section>
+              )}
               <ConfirmDialog
                 open={confirmUnlock}
                 title="Return to test editing?"
@@ -154,6 +211,14 @@ export default function Index() {
               />
             </>
           )}
+          <ConfirmDialog
+            open={confirmReset}
+            title="Reset all Spec2App Verify data?"
+            description="All projects, tests, records, versions and reports stored by Spec2App Verify in this browser will be deleted. Other localStorage data is kept."
+            confirmLabel="Reset"
+            onCancel={() => setConfirmReset(false)}
+            onConfirm={doReset}
+          />
         </main>
       </div>
     </div>

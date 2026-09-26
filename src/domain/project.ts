@@ -158,21 +158,34 @@ export type AppRecord = z.infer<typeof AppRecordSchema>;
 
 export const VersionSchema = z.object({
   id: z.string().min(1),
-  number: z.number().int().positive(),
+  parentVersionId: z.string().nullable(),
   createdAt: z.string(),
-  status: z.enum(['candidate', 'stable', 'rejected', 'invalidated']),
-  testsApprovedAt: z.string(),
+  reason: z.string().min(1),
+  applicationDefinition: AppDefinitionSchema,
   acceptanceTestIds: z.array(z.string()),
-  definition: AppDefinitionSchema,
+  verificationStatus: z.enum(['pending', 'passed', 'failed', 'invalidated']),
+  lifecycleStatus: z.enum(['candidate', 'stable']),
 });
 export type Version = z.infer<typeof VersionSchema>;
+
+export const VerificationResultSchema = z.object({
+  testId: z.string().min(1),
+  title: z.string().min(1),
+  status: z.enum(['passed', 'failed', 'blocked']),
+  expectedResult: z.string(),
+  observedResult: z.string(),
+  evidence: z.string(),
+  timestamp: z.string(),
+  applicationVersion: z.string(),
+});
+export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 
 export const VerificationReportSchema = z.object({
   id: z.string().min(1),
   versionId: z.string().min(1),
   createdAt: z.string(),
   passed: z.boolean(),
-  results: z.array(z.object({ testId: z.string(), passed: z.boolean(), evidence: z.string() })),
+  results: z.array(VerificationResultSchema),
 });
 export type VerificationReport = z.infer<typeof VerificationReportSchema>;
 
@@ -199,6 +212,7 @@ export const ProjectSchema = z.object({
   workflowStatus: WorkflowStatusSchema,
   aiMode: z.enum(['demo', 'http']),
   aiAssistedCallCount: z.number().int().min(0),
-  repairAttemptCount: z.number().int().min(0),
+  /** Automatic repair is excluded from Stage 3, so this is always 0. */
+  repairAttemptCount: z.literal(0),
 });
 export type Project = z.infer<typeof ProjectSchema>;

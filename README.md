@@ -39,3 +39,9 @@ No secrets are stored in the repo or the browser. Live AI is optional and goes t
 
 ## Deployment
 Any static host (Vercel, Netlify, GitHub Pages) can serve `dist/`.
+
+## Verification, persistence and export (Stage 3 §9–17)
+- **Persistence**: projects are stored in `localStorage` under `spec2app-verify:v1:store`. The data is versioned (`schemaVersion: 1`), checked with Zod when loaded, and passed through a migration step first. If stored data is corrupted or uses a newer version, the app starts safely with a warning. **Reset Spec2App data** removes only this app's keys. Data stays in this browser only.
+- **Versions**: each generation creates a `candidate` version with a parent link. Only a candidate that passes verification becomes `stable`. A failed candidate never replaces the stable version.
+- **Verification**: `src/engine/verify.ts` runs 21 deterministic checks. Each result is passed, failed or blocked, with its expected result, observed result, evidence, version and timestamp. Automatic repair is not implemented.
+- **Export**: **Export JSON** checks the export against `ExportSchema` and blocks it if it would include any credential or endpoint.
