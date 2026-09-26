@@ -156,9 +156,11 @@ export default function Index() {
     setTab('preview');
   };
 
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <div className="flex h-screen flex-col bg-slate-50 text-slate-900 lg:flex-row">
-      <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-64 lg:border-b-0 lg:border-r">
+    <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900 lg:h-screen lg:flex-row">
+      <aside className={`flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-52 lg:border-b-0 lg:border-r ${expanded ? 'hidden' : ''}`}>
         <div className="p-3">
           <Button className="w-full" onClick={newProject} disabled={busy}>
             + New Project
@@ -187,7 +189,7 @@ export default function Index() {
         </nav>
       </aside>
 
-      <main className="flex w-full flex-col overflow-y-auto border-slate-200 p-4 lg:w-[420px] lg:shrink-0 lg:border-r">
+      <main className={`flex w-full flex-col overflow-y-auto border-slate-200 p-4 lg:w-[340px] lg:shrink-0 lg:border-r ${expanded ? 'hidden' : ''}`}>
         <h1 className="text-xl font-semibold">AI Webpage Generator</h1>
         <p className="mt-1 text-sm text-slate-600">Describe a webpage application. AI generates runnable HTML, CSS and JavaScript and previews the application here.</p>
         {notice && (
@@ -286,7 +288,7 @@ export default function Index() {
         )}
       </main>
 
-      <section className="flex min-h-[520px] flex-1 flex-col" aria-label="App Viewer">
+      <section className={`flex flex-1 flex-col ${expanded ? 'h-screen' : 'min-h-[80vh] lg:min-h-0'}`} aria-label="App Viewer">
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 text-sm">
           <strong>App Viewer</strong>
           {project && project.versions.length > 0 && (
@@ -309,6 +311,9 @@ export default function Index() {
             </span>
           )}
           <div className="ml-auto flex gap-1">
+            <Button size="sm" variant="outline" className="!bg-transparent" onClick={() => setExpanded((x) => !x)} aria-pressed={expanded}>
+              {expanded ? 'Exit full view' : 'Expand viewer'}
+            </Button>
             {page &&
               FILE_TABS.map((t) => (
                 <button key={t.key} onClick={() => setTab(t.key)} className={`rounded px-2 py-1 text-xs ${tab === t.key ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}>
