@@ -177,3 +177,14 @@ describe('Vercel endpoint and secret exclusion', () => {
     expect(Object.keys(import.meta.env).filter((k) => k.startsWith('VITE_') && /KEY|SECRET|TOKEN/.test(k))).toEqual([]);
   });
 });
+
+describe('EdgeOne Pages function', () => {
+  it('reuses the shared handler and reports not_configured without env', async () => {
+    const { onRequestPost } = await import('../functions/api/generate');
+    const res = await onRequestPost({ request: new Request('http://x/api/generate', { method: 'POST', body: JSON.stringify({ prompt: 'todo' }) }), env: {} });
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.detail.code).toBe('not_configured');
+    expect(JSON.stringify(body)).not.toMatch(/sk-/);
+  });
+});

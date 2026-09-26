@@ -4,7 +4,8 @@
  */
 import { GenerationFailure, buildMessages, parseProviderContent, type GenerateRequestBody } from '../src/gen/provider';
 
-const TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS ?? 170_000);
+const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
+const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
 const STATUS: Record<string, number> = { timeout: 504, quota_exhausted: 429, invalid_request: 422, not_configured: 503 };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -19,7 +20,7 @@ function readBody(raw: unknown): GenerateRequestBody {
   return { prompt: b.prompt.trim(), history, currentFiles: b.currentFiles ?? null };
 }
 
-export async function handleGenerate(request: Request, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): Promise<Response> {
+export async function handleGenerate(request: Request, env: Record<string, string | undefined> = nodeEnv, fetchImpl: typeof fetch = fetch): Promise<Response> {
   const started = Date.now();
   try {
     const body = readBody(await request.json().catch(() => null));

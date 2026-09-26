@@ -4,8 +4,8 @@ import { GenerationFailure, type GenerationErrorCode } from './provider';
 
 const client = createClient();
 const TIMEOUT_MS = 200_000;
-/** Build-time switch (not a secret): 'vercel' uses /api/generate, otherwise the Atoms Cloud endpoint. */
-const TARGET = import.meta.env.VITE_GENERATION_TARGET === 'vercel' ? 'vercel' : 'atoms';
+/** Build-time switch (not a secret): 'edgeone' or 'vercel' use the same-origin /api/generate function, otherwise the Atoms Cloud endpoint. */
+const TARGET = ['vercel', 'edgeone'].includes(import.meta.env.VITE_GENERATION_TARGET ?? '') ? 'vercel' : 'atoms';
 
 export interface GenerateInput {
   prompt: string;

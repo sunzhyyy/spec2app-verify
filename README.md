@@ -44,7 +44,16 @@ pnpm run lint && npx tsc -p tsconfig.app.json --noEmit && pnpm test && pnpm run 
 ## Environment variables (server only; never `VITE_*`)
 `AI_API_KEY`, `AI_BASE_URL` (for example `https://api.openai.com/v1`), `AI_MODEL`, and optionally `AI_TIMEOUT_MS` / `AI_TIMEOUT_SECONDS`. Frontend build switch (not a secret): `VITE_GENERATION_TARGET=vercel` makes the UI call `/api/generate`.
 
+## EdgeOne Pages deployment (primary preview)
+- Framework/runtime: Vite + React static SPA; server route `functions/api/generate.ts` (EdgeOne Pages Function, `onRequestPost`) reusing the shared handler in `api/generate.ts`.
+- Install: `pnpm install --frozen-lockfile`; build: `pnpm run build`; output: `dist` (see `edgeone.json`).
+- Environment (EdgeOne Pages console, server side): `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`; build variable `VITE_GENERATION_TARGET=edgeone` (not a secret).
+- Deploy `brief-rebuild` as a separate preview project; do not replace the production deployment. Promote only after the P0 workflow passes on the preview URL and a human has reviewed it.
+- Not yet verified on a live EdgeOne deployment.
+
 ## Vercel deployment
+
+(Backup deployment target.)
 Framework: Vite (React 18 + TS); functions: Node runtime (`api/generate.ts`). Install command: `pnpm install --frozen-lockfile`. Build command: `pnpm run build`. Output directory: `dist`. Set `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` and `VITE_GENERATION_TARGET=vercel` for the **Preview** environment and deploy the `brief-rebuild` branch as a preview. Production promotion is manual (“Promote to Production”) and should happen only after the P0 checks pass on the preview URL.
 
 ## Known limitations
