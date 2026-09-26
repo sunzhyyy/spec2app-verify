@@ -8,8 +8,10 @@ import { handleGenerate } from '../../api/generate';
 interface EdgeOneContext {
   request: Request;
   env: Record<string, string | undefined>;
+  /** Test seam only; EdgeOne never supplies it. */
+  fetchImpl?: typeof fetch;
 }
 
 export function onRequestPost(context: EdgeOneContext): Promise<Response> {
-  return handleGenerate(context.request, context.env ?? {});
+  return handleGenerate(context.request, context.env ?? {}, context.fetchImpl ?? fetch);
 }

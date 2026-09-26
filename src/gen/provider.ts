@@ -78,17 +78,20 @@ export interface ParsedGeneration extends GeneratedFiles {
   generationNotes: string;
 }
 
-export function parseProviderContent(raw: string): ParsedGeneration {
-  const text = stripFence(raw ?? '');
-  if (!text) throw new GenerationFailure('empty_content', 'The model returned an empty response.', true);
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new GenerationFailure('malformed_json', 'The model response did not contain a JSON object.', true);
+/** Accepts provider content as an object, a JSON string or a fenced JSON string; parses at most once. */
+export function parseProviderContent(raw: unknown): ParsedGeneration {
   let data: unknown;
-  try {
-    data = JSON.parse(text.slice(start, end + 1));
-  } catch (e) {
-    throw new GenerationFailure('malformed_json', `The model returned malformed JSON (${(e as Error).message}).`, true);
+  if (raw && typeof raw === 'object') {
+    data = raw;
+  } else {
+    const text = stripFence(typeof raw === 'string' ? raw : '');
+    if (!text) throw new GenerationFailure('empty_content', 'The model returned an empty response.', true);
+    if (!text.startsWith('{')) throw new GenerationFailure('schema_invalid', 'The model response was not a JSON object.', true);
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new GenerationFailure('schema_invalid', `The model returned malformed JSON (${(e as Error).message}).`, true);
+    }
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new GenerationFailure('schema_invalid', 'The model response was not a JSON object.', true);
   const obj = data as Record<string, unknown>;

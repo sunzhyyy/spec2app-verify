@@ -5,7 +5,20 @@ import { GenerationFailure, type GenerationErrorCode } from './provider';
 const client = createClient();
 const TIMEOUT_MS = 200_000;
 /** Build-time switch (not a secret): 'edgeone' or 'vercel' use the same-origin /api/generate function, otherwise the Atoms Cloud endpoint. */
-const TARGET = ['vercel', 'edgeone'].includes(import.meta.env.VITE_GENERATION_TARGET ?? '') ? 'vercel' : 'atoms';
+const EDGEONE_HOST = /\.(edgeone\.app|edgeone\.run|edgeone\.cool)$/i;
+export function resolveTarget(flag: string | undefined, hostname: string): 'serverless' | 'atoms' {
+  if (flag === 'vercel' || flag === 'edgeone') return 'serverless';
+  if (flag !== 'atoms' && (EDGEONE_HOST.test(hostname) || /\.vercel\.app$/i.test(hostname))) return 'serverless';
+  return 'atoms';
+}
+const TARGET = resolveTarget(import.meta.env.VITE_GENERATION_TARGET, typeof window !== 'undefined' ? window.location.hostname : '');
+
+/** Unwraps the `{ response: {...} }` envelope. A string body means the route returned non-JSON (e.g. the SPA's HTML). */
+export function unwrapGenerationBody(body: unknown): unknown {
+  if (typeof body === 'string') throw new GenerationFailure('schema_invalid', 'The generation endpoint returned text instead of JSON. Check that /api/generate is deployed and VITE_GENERATION_TARGET is set.', true);
+  if (body && typeof body === 'object' && 'response' in body) return (body as { response: unknown }).response;
+  return body;
+}
 
 export interface GenerateInput {
   prompt: string;
@@ -29,7 +42,7 @@ function toFailure(e: unknown): GenerationFailure {
 export async function requestGeneration(input: GenerateInput): Promise<GenerationResponse> {
   let raw: unknown;
   try {
-    if (TARGET === 'vercel') {
+    if (TARGET === 'serverless') {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -46,6 +59,7 @@ export async function requestGeneration(input: GenerateInput): Promise<Generatio
   } catch (e) {
     throw toFailure(e);
   }
+  raw = unwrapGenerationBody(raw);
   const checked = validateLiveResponse(raw, input.prompt);
   if ('message' in checked) throw new GenerationFailure('schema_invalid', `Server response failed validation: ${checked.message}`, true);
   return checked.data as GenerationResponse;

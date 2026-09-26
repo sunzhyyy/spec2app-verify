@@ -61,8 +61,8 @@ describe('malformed provider output', () => {
   it('parses JSON, strips fences, and rejects malformed/missing/empty', () => {
     expect(parseProviderContent('```json\n' + JSON.stringify(files) + '\n```').title).toBe('Todo');
     const code = (fn: () => unknown) => { try { fn(); } catch (e) { return (e as GenerationFailure).code; } return 'ok'; };
-    expect(code(() => parseProviderContent('not json'))).toBe('malformed_json');
-    expect(code(() => parseProviderContent('{"title":'))).toBe('malformed_json');
+    expect(code(() => parseProviderContent('not json'))).toBe('schema_invalid');
+    expect(code(() => parseProviderContent('{"title":'))).toBe('schema_invalid');
     expect(code(() => parseProviderContent(''))).toBe('empty_content');
     const { scriptJs: _s, ...noScript } = files;
     expect(code(() => parseProviderContent(JSON.stringify(noScript)))).toBe('missing_files');
@@ -162,7 +162,7 @@ describe('Vercel endpoint and secret exclusion', () => {
     expect(res.status).toBe(200);
     expect(auth).toBe('Bearer sk-test-secret');
     expect(text).not.toContain('sk-test-secret');
-    expect(validateLiveResponse(JSON.parse(text), 'make todo').ok).toBe(true);
+    expect(validateLiveResponse(JSON.parse(text).response, 'make todo').ok).toBe(true);
   });
   it('maps quota and malformed output to errors; unconfigured does not claim invocation', async () => {
     const q = (async () => new Response('', { status: 429 })) as unknown as typeof fetch;

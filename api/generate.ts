@@ -8,7 +8,7 @@ const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefine
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
 const STATUS: Record<string, number> = { timeout: 504, quota_exhausted: 429, invalid_request: 422, not_configured: 503 };
 
-const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 const fail = (e: GenerationFailure) => json(STATUS[e.code] ?? 502, { detail: { code: e.code, message: e.message, providerInvoked: e.providerInvoked } });
 
 function readBody(raw: unknown): GenerateRequestBody {
@@ -43,18 +43,20 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     if (res.status === 402 || res.status === 429) throw new GenerationFailure('quota_exhausted', `The AI provider rejected the request (HTTP ${res.status}).`, true);
     if (!res.ok) throw new GenerationFailure('provider_unavailable', `The AI provider returned HTTP ${res.status}.`, true);
 
-    const envelope = (await res.json().catch(() => null)) as { choices?: { message?: { content?: string } }[] } | null;
+    const envelope = (await res.json().catch(() => null)) as { choices?: { message?: { content?: unknown } }[] } | null;
     const content = envelope?.choices?.[0]?.message?.content;
-    if (typeof content !== 'string') throw new GenerationFailure('malformed_json', 'The AI provider returned an unexpected response envelope.', true);
+    if (content === undefined || content === null) throw new GenerationFailure('malformed_json', 'The AI provider returned an unexpected response envelope.', true);
 
     const files = parseProviderContent(content);
     return json(200, {
+      response: {
       ...files,
       generationMode: 'live',
       providerInvoked: true,
       provider: `openai-compatible:${model}`,
       receivedPrompt: body.prompt,
       durationMs: Date.now() - started,
+      },
     });
   } catch (e) {
     if (e instanceof GenerationFailure) return fail(e);
