@@ -2,7 +2,7 @@
  * Vercel serverless function: POST /api/generate
  * Env (server-side only): AI_API_KEY, AI_BASE_URL, AI_MODEL. Keys are never returned or logged.
  */
-import { GenerationFailure, buildMessages, parseProviderContent, type GenerateRequestBody } from '../src/gen/provider';
+import { GenerationFailure, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
 
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
@@ -18,6 +18,19 @@ function readBody(raw: unknown): GenerateRequestBody {
   }
   const history = Array.isArray(b.history) ? b.history.filter((h) => typeof h === 'string').slice(-12) : [];
   return { prompt: b.prompt.trim(), history, currentFiles: b.currentFiles ?? null };
+}
+
+const REQUIRED = ['title', 'summary', 'indexHtml', 'stylesCss', 'scriptJs', 'readme', 'generationNotes'] as const;
+
+/** Rejects any success payload whose `response` is not a plain object with string files. Logs types/keys only. */
+export function assertSuccessContract(payload: unknown): void {
+  const r = (payload as { response?: unknown } | null)?.response;
+  const isObj = !!r && typeof r === 'object' && !Array.isArray(r);
+  console.log({ stage: 'success-contract', topLevelType: typeof payload, responseType: typeof r, responseIsArray: Array.isArray(r), responseKeys: isObj ? Object.keys(r as object) : [] });
+  const o = r as Record<string, unknown>;
+  if (!payload || typeof payload !== 'object' || !isObj || REQUIRED.some((k) => typeof o[k] !== 'string') || o.generationMode !== 'live' || o.providerInvoked !== true) {
+    throw new GenerationFailure('schema_invalid', 'The server built an invalid success payload.', true);
+  }
 }
 
 export async function handleGenerate(request: Request, env: Record<string, string | undefined> = nodeEnv, fetchImpl: typeof fetch = fetch): Promise<Response> {
@@ -47,17 +60,19 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     const content = envelope?.choices?.[0]?.message?.content;
     if (content === undefined || content === null) throw new GenerationFailure('malformed_json', 'The AI provider returned an unexpected response envelope.', true);
 
-    const files = parseProviderContent(content);
-    return json(200, {
+    const files = normalizeGeneratedContent(content);
+    const successPayload = {
       response: {
-      ...files,
-      generationMode: 'live',
-      providerInvoked: true,
-      provider: `openai-compatible:${model}`,
-      receivedPrompt: body.prompt,
-      durationMs: Date.now() - started,
+        ...files,
+        generationMode: 'live' as const,
+        providerInvoked: true as const,
+        provider: `openai-compatible:${model}`,
+        receivedPrompt: body.prompt,
+        durationMs: Date.now() - started,
       },
-    });
+    };
+    assertSuccessContract(successPayload);
+    return json(200, successPayload);
   } catch (e) {
     if (e instanceof GenerationFailure) return fail(e);
     return fail(new GenerationFailure('provider_unavailable', 'Unexpected server error.', false));

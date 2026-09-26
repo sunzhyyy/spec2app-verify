@@ -79,9 +79,16 @@ export interface ParsedGeneration extends GeneratedFiles {
 }
 
 /** Accepts provider content as an object, a JSON string or a fenced JSON string; parses at most once. */
+/** Normalizes provider message.content exactly once: object -> validate; string -> strip one fence, JSON.parse once, validate. */
+export function normalizeGeneratedContent(raw: unknown): ParsedGeneration {
+  if (raw !== null && typeof raw !== 'object' && typeof raw !== 'string') throw new GenerationFailure('schema_invalid', 'The model response was not a JSON object.', true);
+  return parseProviderContent(raw);
+}
+
 export function parseProviderContent(raw: unknown): ParsedGeneration {
   let data: unknown;
   if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw)) throw new GenerationFailure('schema_invalid', 'The model response was not a JSON object.', true);
     data = raw;
   } else {
     const text = stripFence(typeof raw === 'string' ? raw : '');
@@ -119,4 +126,15 @@ export function parseProviderContent(raw: unknown): ParsedGeneration {
     summary: (obj.summary as string).trim().slice(0, 600),
     generationNotes: (obj.generationNotes as string).trim().slice(0, 1000),
   };
+}
+
+/** Unwraps the `{ response: {...} }` envelope. A string body means the route returned non-JSON (e.g. the SPA's HTML). */
+export function unwrapGenerationBody(body: unknown): unknown {
+  if (typeof body === 'string') throw new GenerationFailure('schema_invalid', 'The generation endpoint returned text instead of JSON. Check that /api/generate is deployed and VITE_GENERATION_TARGET is set.', true);
+  if (body && typeof body === 'object' && 'response' in body) {
+    const r = (body as { response: unknown }).response;
+    if (typeof r === 'string') throw new GenerationFailure('schema_invalid', 'The generation endpoint double-serialized its response (response was a string).', true);
+    return r;
+  }
+  return body;
 }

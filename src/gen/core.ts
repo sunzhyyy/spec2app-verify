@@ -56,7 +56,7 @@ export type PageResource = z.infer<typeof PageResourceSchema>;
 /** A result may be labelled live only if the server confirms it invoked the provider for this exact prompt. */
 export function validateLiveResponse(raw: unknown, sentPrompt: string): { ok: true; data: GenerationResponse } | { ok: false; message: string } {
   const parsed = GenerationResponseSchema.safeParse(raw);
-  if (!parsed.success) return { ok: false, message: parsed.error.issues.map((i) => `${i.path.join('.') || 'response'}: ${i.message}`).join('; ') };
+  if (!parsed.success) return { ok: false, message: parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ') };
   if (parsed.data.receivedPrompt !== sentPrompt) return { ok: false, message: 'Server echoed a different prompt than the one sent.' };
   return { ok: true, data: parsed.data };
 }

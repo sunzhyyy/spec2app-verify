@@ -1,6 +1,6 @@
 import { createClient } from '@metagptx/web-sdk';
 import { validateLiveResponse, type GeneratedFiles, type GenerationResponse } from './core';
-import { GenerationFailure, type GenerationErrorCode } from './provider';
+import { GenerationFailure, unwrapGenerationBody, type GenerationErrorCode } from './provider';
 
 const client = createClient();
 const TIMEOUT_MS = 200_000;
@@ -13,12 +13,7 @@ export function resolveTarget(flag: string | undefined, hostname: string): 'serv
 }
 const TARGET = resolveTarget(import.meta.env.VITE_GENERATION_TARGET, typeof window !== 'undefined' ? window.location.hostname : '');
 
-/** Unwraps the `{ response: {...} }` envelope. A string body means the route returned non-JSON (e.g. the SPA's HTML). */
-export function unwrapGenerationBody(body: unknown): unknown {
-  if (typeof body === 'string') throw new GenerationFailure('schema_invalid', 'The generation endpoint returned text instead of JSON. Check that /api/generate is deployed and VITE_GENERATION_TARGET is set.', true);
-  if (body && typeof body === 'object' && 'response' in body) return (body as { response: unknown }).response;
-  return body;
-}
+export { unwrapGenerationBody };
 
 export interface GenerateInput {
   prompt: string;
@@ -39,23 +34,28 @@ function toFailure(e: unknown): GenerationFailure {
   return new GenerationFailure('network', err?.message || 'Network error while contacting the generation endpoint.', false);
 }
 
+async function fetchServerless(input: GenerateInput): Promise<unknown> {
+  const res = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const isJson = /application\/json/i.test(res.headers.get('content-type') ?? '');
+  const body = isJson ? await res.json().catch(() => null) : await res.text();
+  if (!res.ok) throw { response: { data: body, status: res.status }, message: `HTTP ${res.status}` };
+  return body;
+}
+
 export async function requestGeneration(input: GenerateInput): Promise<GenerationResponse> {
   let raw: unknown;
   try {
-    if (TARGET === 'serverless') {
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) throw { response: { data: body, status: res.status }, message: `HTTP ${res.status}` };
-      raw = body;
-    } else {
+    if (TARGET === 'atoms') {
       const res = await client.apiCall.invoke({ url: '/api/v1/generate/page', method: 'POST', data: input, options: { timeout: TIMEOUT_MS } });
       raw = res.data;
     }
+    // A string here means this host has no Atoms route and served the SPA HTML; use the same-origin serverless function instead.
+    if (TARGET === 'serverless' || typeof raw === 'string') raw = await fetchServerless(input);
   } catch (e) {
     throw toFailure(e);
   }
