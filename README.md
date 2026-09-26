@@ -14,7 +14,7 @@ Two interchangeable endpoints share the same prompt and response schema:
 
 | Deployment | Route | Code | Provider |
 |---|---|---|---|
-| Atoms Cloud (default build) | `POST /api/v1/generate/page` | `app/backend/routers/generate.py`, `services/page_generator.py` | OpenAI-compatible provider if `AI_API_KEY` + `AI_BASE_URL` are set, otherwise the Atoms AI Hub model (`AI_MODEL`, default `gpt-5.4`) |
+| Atoms Cloud (workspace validation only; not part of this repository or the public deployment) | `POST /api/v1/generate/page` | Atoms workspace environment only, returns the same validated response schema | OpenAI-compatible provider if `AI_API_KEY` + `AI_BASE_URL` are set, otherwise the Atoms AI Hub model (`AI_MODEL`, default `gpt-5.4`) |
 | Vercel | `POST /api/generate` | `api/generate.ts`, `src/gen/provider.ts` | OpenAI-compatible (`AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`) |
 
 The request contains only `prompt`, compact `history` (earlier prompts) and `currentFiles` (for follow-ups). The response contains `title, summary, indexHtml, stylesCss, scriptJs, readme, generationNotes` plus `generationMode: "live"`, `providerInvoked: true`, `provider` and `receivedPrompt`. Malformed JSON, missing or empty files, Markdown fences and oversized files are rejected with a coded error (`timeout`, `quota_exhausted`, `provider_unavailable`, `malformed_json`, `schema_invalid`, `missing_files`, `empty_content`). No automatic retries are made.
