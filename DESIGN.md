@@ -1,4 +1,4 @@
-# Spec2App Verify — Design (draft)
+# Spec2App Verify — Design
 
 ## Direction & Layout
 An engineering workbench that is calm, dense and trustworthy, not a marketing page. It has three panes: a 240px project sidebar on the left, a fluid workflow column in the centre, and a 420px preview and evidence pane on the right. On screens narrower than 1024px the panes stack and the sidebar becomes a drawer. The maximum width is full-bleed with 24px gutters. Avoid gradients, 3D art, glassmorphism and fake charts.

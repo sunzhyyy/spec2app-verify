@@ -1,20 +1,59 @@
-# Spec2App Verify (draft)
+# Spec2App Verify
 
-Spec2App Verify turns a natural-language requirement into a verified, data-driven mini app through a test-driven workflow. The principle is: tests define what done means.
+Turn a natural-language requirement into a test-defined, interactive mini application with deterministic verification and bounded repair.
 
-**Status: Stage 2 engineering skeleton.** The core workflow is not implemented yet.
+**Principle: tests define what done means.**
 
-## Stack
-React 18, TypeScript, Vite, Tailwind, shadcn/ui, Zod, Vitest. The app is static and client-side only. Data is stored in localStorage.
+- Public demo: `<PUBLIC_DEMO_URL>` (to be added)
+- **The public Demo requires no login and no API key.** It runs in *Deterministic Demo Mode – no model call*, using an embedded AI benchmark example so you can review the whole workflow without calling an external model.
 
-## Setup
+## Workflow
+Define requirement → Review acceptance tests → Generate application → Verify behavior → Repair within limits → Promote a stable version
+
+1. **Define requirement.** Write the requirement, then analyze it into purpose, user, fields, rules and actions.
+2. **Review acceptance tests.** Edit the proposed tests, then approve them. Once approved, tests are locked.
+3. **Generate application.** A Zod-validated app definition is created and drawn by a bounded renderer. It becomes a `candidate` version.
+4. **Verify behavior.** Deterministic checks run against the candidate. Each check records its expected result, observed result and evidence.
+5. **Repair within limits.** If verification fails, you review a proposed repair before it is applied as a new candidate.
+6. **Promote a stable version.** Only a candidate that passes every required check becomes `stable`.
+
+## Demo instructions (for reviewers)
+1. Open the app and click **New project**. The benchmark tracker requirement is pre-filled.
+2. Click **Analyze requirement**, review the tests, then **Approve test set**.
+3. **Generate application**, try out the tracker (add, edit, delete, filter), then **Run verification**.
+4. Look at the verification report and the Current/Stable version badges. **Export JSON** downloads the validated evidence.
+5. The repair flow appears after a failed verification. The fault scenarios that lead to repair are covered by the automated tests (see below).
+
+## Core capabilities
+- Requirement analysis and editable acceptance tests with an approval gate
+- Schema-validated app definition drawn by trusted, bounded components (no generated code is executed)
+- Deterministic verification with passed, failed or blocked results and evidence
+- Version history with parent links and separate candidate and stable lifecycles
+- Bounded, user-reviewed repair
+- Validated JSON export with an allow-list
+
+## Verification model
+`src/engine/verify.ts` runs deterministic checks (VC-01 … VC-22). These cover fields, validation rules, create/update/delete, filters, metrics, empty and no-results states, acceptance-test references and required capabilities (VC-22). A result can be passed, failed or blocked (a prerequisite failed). A failed candidate never replaces the stable version.
+
+## Bounded-repair rules
+- Repairs require user review, are limited to **two applied attempts** per approved baseline and can never overwrite the last stable version unless all required checks pass.
+- A proposal is rejected before it is applied if it is malformed, changes approved tests or their references, touches paths outside the failing scope, contains executable content, removes required capabilities or fails schema validation.
+- Reverification re-runs the failed checks, the checks mapped to the changed paths and a mandatory core regression set.
+- A candidate is promoted only if it passes schema validation, has no missing capabilities (`missingCapabilities()` is empty) and passes all selected checks.
+- Results are `repaired`, `improved`, `no_improvement`, `repeated_failure`, `regression` or `limit_reached`. A stop report lists the reason, remaining failed and blocked checks, the last stable version and a suggested next action.
+- The Demo uses deterministic repair with no model call.
+
+## Technology stack
+React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, Zod, Vitest and GitHub Actions CI. The app is a static, client-side-only single-page app.
+
+## Local setup
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 cp .env.example .env   # optional; leave VITE_AI_ENDPOINT empty for Demo Mode
 pnpm dev               # http://localhost:5173
 ```
 
-## Commands
+## Test and build
 | Purpose | Command |
 |---|---|
 | Lint | `pnpm lint` |
@@ -23,49 +62,22 @@ pnpm dev               # http://localhost:5173
 | Build | `pnpm build` (output in `dist/`) |
 | Preview build | `pnpm preview` |
 
+Any static host can serve `dist/`.
+
+## Security boundaries
+- No secrets are stored in the repository or in the browser. The Demo needs no key.
+- Generated definitions are data, not code. Only trusted renderer components are used.
+- Exports are schema-validated and allow-listed, and are blocked if they would contain credentials or endpoints.
+- `Reset Spec2App data` removes only this app's localStorage keys.
+
+## Persistence limitation
+Projects are stored in this browser using versioned localStorage (`spec2app-verify:v1:store`, validated with Zod when loaded). Cross-device synchronization is not supported. If stored data is corrupted or uses a newer version, the app starts safely and shows a warning.
+
+## Known limitations
+- Demo Mode covers one embedded benchmark domain. No live AI provider is configured in the public Demo.
+- Repair scenarios are covered by deterministic automated tests (`tests/repair.test.ts`, `tests/repairSafety.test.ts`). The repair interaction has not been manually tested end-to-end in a browser.
+- Single user, single browser. There is no authentication or collaboration.
+- This is a review demo, not a production-hardened service.
+
 ## Structure
-- `src/domain`: types and schemas
-- `src/engine`: generators, verifier, repair, versioning (planned)
-- `src/ai`: provider interface; Demo provider plus optional HTTP provider (planned)
-- `src/renderer`: bounded components that draw the mini app (planned)
-- `src/store`: persistence (planned)
-- `src/pages`: routes
-- `src/components/ui`: shadcn components
-- `tests`: Vitest suites
-- `.github/workflows/ci.yml`: CI (lint, typecheck, test, build)
-
-## Security
-No secrets are stored in the repo or the browser. Live AI is optional and goes through your own server endpoint.
-
-## Deployment
-Any static host (Vercel, Netlify, GitHub Pages) can serve `dist/`.
-
-## Verification, persistence and export (Stage 3 §9–17)
-- **Persistence**: projects are stored in `localStorage` under `spec2app-verify:v1:store`. The data is versioned (`schemaVersion: 1`), checked with Zod when loaded, and passed through a migration step first. If stored data is corrupted or uses a newer version, the app starts safely with a warning. **Reset Spec2App data** removes only this app's keys. Data stays in this browser only.
-- **Versions**: each generation creates a `candidate` version with a parent link. Only a candidate that passes verification becomes `stable`. A failed candidate never replaces the stable version.
-- **Verification**: `src/engine/verify.ts` runs 21 deterministic checks. Each result is passed, failed or blocked, with its expected result, observed result, evidence, version and timestamp. Automatic repair is not implemented.
-- **Export**: **Export JSON** checks the export against `ExportSchema` and blocks it if it would include any credential or endpoint.
-
-## Stage 4 – Bounded repair
-
-After a failed verification, the workspace shows a **Bounded repair** panel. The default is Deterministic Repair Mode, which makes no model call.
-
-1. **Propose repair.** This is available only when the latest report on the current candidate has failed or blocked checks, the approved tests are unchanged, the definition is valid, and fewer than 2 repairs have been applied.
-2. **Review.** Before anything changes, the panel shows the diagnosed cause, the affected definition paths, the expected improvement and the risk.
-3. **Apply as new candidate.** This creates a new version with `parentVersionId` pointing to the failed candidate. The stable version is never overwritten.
-4. **Run repair reverification.** This runs a targeted set of checks: the ones that failed before the repair, checks mapped to the changed paths, the mandatory core regression set (`CORE_REGRESSION_IDS`), and their prerequisites. Checks that are not re-run are listed as carried forward.
-
-Proposals are rejected before they are applied if any of the following is true: they are malformed, they change acceptance tests or their references, they touch paths unrelated to the failing checks or outside the repairable scope, they contain executable code, they remove required fields, actions, filters or metrics, or they fail schema validation.
-
-After reverification, each repair gets one of these results: `repaired`, `improved`, `no_improvement`, `repeated_failure` (same failure signature), `regression`, or `limit_reached`. Every result except `repaired` and `improved` stops the workflow. Limits: 2 repair attempts per approved baseline generation and 5 AI-assisted calls per project. An optional HTTP provider (`requestHttpRepair`) sends only a compact context and no secrets. Repair history is saved to localStorage and included in the validated JSON export (schema v2, `repair` section).
-
-Tests: `tests/repair.test.ts` covers scenarios A–E: constraint repair, bounded stop, regression, test immutability, and malformed or unavailable provider output.
-
-### Stage 4.1 – Repair safety invariants
-
-- Accepting a repair proposal only means it is within repair scope. It does **not** mean the candidate is valid or stable.
-- Incremental repair candidates may remain incomplete or failing. They stay `candidate`, and `stableVersionId` does not change.
-- Stable promotion requires all of the following: `AppDefinitionSchema` validity, complete capability invariants (`missingCapabilities()` is empty: fields, actions, filters, metrics, layout sections, test references, empty and no-results states), VC-22, and every selected affected and core-regression check passing.
-- Each export attempt records `proposalAccepted`, `candidateStructurallyValid`, `candidateVerificationPassed` and `promotedToStable` separately. Stop reports also include the remaining failed and blocked checks, the last stable version and a suggested next action.
-- A maximum of two repairs can be applied per approved baseline. The public Demo uses deterministic repair with no model call.
-- The browser-level repair interaction has not been validated manually. Coverage comes from automated tests (`tests/repair.test.ts`, `tests/repairSafety.test.ts`).
+`src/domain` (schemas and workflow), `src/engine` (generation, verification, repair, export), `src/renderer` (bounded UI), `src/store` (persistence), `src/ai` (mode selection), `src/pages`, `tests`, `.github/workflows/ci.yml`.

@@ -70,6 +70,19 @@ export default function Index() {
         <h1 className="text-xl font-bold">{APP_NAME}</h1>
         <Badge variant="secondary">{DEMO_MODE_LABEL}</Badge>
       </header>
+      <section aria-label="About Spec2App Verify" className="space-y-2 border-b bg-muted/40 px-4 py-3 text-sm">
+        <p className="font-medium">Turn a natural-language requirement into a test-defined, interactive mini application with deterministic verification and bounded repair. <span className="text-muted-foreground">Tests define what done means.</span></p>
+        <ol aria-label="Workflow" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          {['Define requirement', 'Review acceptance tests', 'Generate application', 'Verify behavior', 'Repair within limits', 'Promote a stable version'].map((step, i) => (
+            <li key={step} className="flex items-center gap-2">{i > 0 && <span aria-hidden>→</span>}<span><b className="text-foreground">{i + 1}.</b> {step}</span></li>
+          ))}
+        </ol>
+        <ul className="grid gap-1 text-xs text-muted-foreground md:grid-cols-3">
+          <li>This public demo requires no login or API key. It uses a deterministic embedded AI benchmark example, so no external model is called.</li>
+          <li>Verification evidence and every version are kept. Only a candidate that passes all required checks becomes the stable version.</li>
+          <li>Repairs require user review and are limited to two applied attempts. They can never overwrite the last stable version unless all required checks pass.</li>
+        </ul>
+      </section>
       <div className="flex flex-col md:flex-row">
         <aside className="space-y-2 border-b p-4 md:w-60 md:border-b-0 md:border-r">
           <Button className="w-full" onClick={create}>New project</Button>
@@ -82,7 +95,7 @@ export default function Index() {
             ))}
           </nav>
           <Button variant="outline" size="sm" className="w-full" onClick={() => setConfirmReset(true)}>Reset Spec2App data</Button>
-          <p className="text-xs text-muted-foreground">Data is stored only in this browser (localStorage). It is not synced across devices.</p>
+          <p className="text-xs text-muted-foreground">Projects are stored in this browser using versioned localStorage. Cross-device synchronization is not supported.</p>
         </aside>
         <main className="min-w-0 flex-1 space-y-6 p-4">
           {message && (
@@ -93,7 +106,7 @@ export default function Index() {
           {!project ? (
             <div className="rounded-lg border border-dashed p-10 text-center">
               <p className="font-medium">No project selected</p>
-              <p className="text-sm text-muted-foreground">Create a project to turn a requirement into a verified application.</p>
+              <p className="text-sm text-muted-foreground">Click <b>New project</b> to start. You will write a requirement, review and approve its acceptance tests, then generate and verify the application.</p>
             </div>
           ) : (
             <>
