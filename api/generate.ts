@@ -2,13 +2,17 @@
  * Vercel serverless function: POST /api/generate
  * Env (server-side only): AI_API_KEY, AI_BASE_URL, AI_MODEL. Keys are never returned or logged.
  */
-import { GenerationFailure, parseProviderEnvelope, type GenerationErrorCode, type ProviderEnvelope, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
+import { GenerationFailure, parseProviderEnvelope, type GenerationErrorCode, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
 
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
 /** Output budget: DeepSeek's documented chat maximum; override with AI_MAX_TOKENS for models with larger limits. */
 const DEFAULT_MAX_TOKENS = 8192; // DeepSeek chat output ceiling; override with AI_MAX_TOKENS.
-const RETRYABLE = new Set<string>(['provider_empty_response', 'malformed_json', 'provider_output_truncated']);
+/** Failures that get exactly one retry. All occur only after an HTTP 200; 401/402/403/404/429, network and timeout are never retried. */
+const RETRYABLE = new Set<string>(['provider_empty_response', 'provider_empty_content', 'provider_invalid_json', 'provider_invalid_response', 'malformed_json', 'provider_output_truncated']);
+/** Body-level failures where the retry may omit response_format for compatibility. */
+const COMPAT_RETRY = new Set<string>(['provider_empty_response', 'provider_invalid_json']);
+const MAX_ATTEMPTS = 2;
 const STATUS: Record<string, number> = { timeout: 504, provider_timeout: 504, quota_exhausted: 429, provider_rate_limited: 429, invalid_request: 422, not_configured: 503 };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
@@ -56,6 +60,21 @@ export function requestMeta(cfg: Record<string, unknown>, url: string) {
   };
 }
 
+/** Safe body metadata: lengths and leading-character flags only, never the body itself. */
+export function bodyMeta(upstreamStatus: number, upstreamContentType: string, rawBody: string) {
+  const t = rawBody.trim();
+  return {
+    upstreamStatus,
+    upstreamContentType: upstreamContentType.replace(/[^\w/;=.+ -]/g, '').slice(0, 80),
+    bodyLength: rawBody.length,
+    bodyTrimmedLength: t.length,
+    bodyIsEmpty: t.length === 0,
+    bodyIsLiteralNull: t === 'null',
+    bodyStartsWithBrace: t.startsWith('{'),
+    bodyStartsWithBracket: t.startsWith('['),
+  };
+}
+
 /** Safe fetch-exception diagnostic: names, network code, host/path, elapsed. No key, headers, prompt or body. */
 export function fetchDiagnostic(e: unknown, url: string, elapsedMs: number, secrets: (string | undefined)[]) {
   const err = (e ?? {}) as { name?: unknown; message?: unknown; cause?: { code?: unknown } };
@@ -99,17 +118,19 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     const timeoutMs = Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS;
     // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
     const maxTokens = Math.floor(Number(env.AI_MAX_TOKENS)) > 0 ? Math.floor(Number(env.AI_MAX_TOKENS)) : DEFAULT_MAX_TOKENS;
-    /** One provider attempt with its own AbortController timer; the timer is always cleared. */
-    const requestConfig = { model, temperature: 0.4, max_tokens: maxTokens, response_format: { type: 'json_object' as const } };
-    const attempt = async (strict: boolean) => {
+    const baseConfig = { model, stream: false, temperature: 0.4, max_tokens: maxTokens };
+    /** One provider attempt with its own AbortController timer; the timer is always cleared. The body is read exactly once as text. */
+    const attempt = async (strict: boolean, withResponseFormat: boolean) => {
+      const requestConfig = withResponseFormat ? { ...baseConfig, response_format: { type: 'json_object' as const } } : baseConfig;
+      const request = requestMeta(requestConfig, url);
       const controller = new AbortController();
       let timeoutTriggered = false;
       const timer = setTimeout(() => {
         timeoutTriggered = true;
         controller.abort();
       }, timeoutMs);
-      let envelope: ProviderEnvelope | null;
-      let upstreamStatus = 0;
+      let meta: ReturnType<typeof bodyMeta>;
+      let envelope: unknown;
       try {
         let res: Response;
         try {
@@ -125,28 +146,60 @@ export async function handleGenerate(request: Request, env: Record<string, strin
           if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
           throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
         }
-        upstreamStatus = res.status;
         if (!res.ok) {
           const code = UPSTREAM[res.status] ?? 'provider_http_error';
           throw new GenerationFailure(code, `The AI provider returned HTTP ${res.status}.`, true, { upstreamStatus: res.status });
         }
-        envelope = (await res.json().catch(() => {
-          if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic: { timeoutTriggered } });
-          return null;
-        })) as typeof envelope;
+        const contentType = res.headers.get('content-type') ?? '';
+        let rawBody: string;
+        try {
+          rawBody = await res.text();
+        } catch (e) {
+          const diagnostic = { ...fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]), timeoutTriggered, upstreamStatus: res.status };
+          if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
+          throw new GenerationFailure('provider_unavailable', 'Could not read the AI provider response.', true, { diagnostic });
+        }
+        meta = bodyMeta(res.status, contentType, rawBody);
+        const trimmed = rawBody.trim();
+        if (!trimmed || trimmed === 'null') {
+          throw new GenerationFailure('provider_empty_response', 'The AI provider returned an empty response body.', true, { diagnostic: { ...meta, parseErrorName: null, request } });
+        }
+        try {
+          envelope = JSON.parse(trimmed);
+        } catch (e) {
+          const parseErrorName = ((e as Error)?.name ?? 'Error').replace(/[^A-Za-z]/g, '').slice(0, 40);
+          throw new GenerationFailure('provider_invalid_json', 'The AI provider response body is not valid JSON.', true, { diagnostic: { ...meta, parseErrorName, request } });
+        }
       } finally {
         clearTimeout(timer);
       }
-      return parseProviderEnvelope(envelope, upstreamStatus, requestMeta(requestConfig, url));
+      try {
+        return parseProviderEnvelope(envelope, meta.upstreamStatus, request);
+      } catch (e) {
+        if (e instanceof GenerationFailure) e.extra = { ...e.extra, diagnostic: { ...meta, ...((e.extra?.diagnostic as object) ?? {}), request } };
+        throw e;
+      }
     };
     let files;
+    let firstFailureCode: string | null = null;
     try {
-      files = await attempt(false);
+      files = await attempt(false, true);
     } catch (e) {
-      // One bounded retry for content-quality failures only; never auth, payment, rate-limit, network or timeout.
-      if (!(e instanceof GenerationFailure) || !RETRYABLE.has(e.code)) throw e;
-      console.log({ stage: 'provider-retry', reason: e.code, ...((e.extra?.diagnostic as object) ?? {}) });
-      files = await attempt(true);
+      if (!(e instanceof GenerationFailure) || !RETRYABLE.has(e.code) || MAX_ATTEMPTS < 2) throw e;
+      firstFailureCode = e.code;
+      const compatibility = COMPAT_RETRY.has(e.code);
+      console.log({ stage: 'provider-retry', attemptNumber: 2, firstFailureCode, compatibilityRetry: compatibility, ...((e.extra?.diagnostic as object) ?? {}) });
+      try {
+        files = await attempt(true, !compatibility);
+      } catch (retryError) {
+        if (retryError instanceof GenerationFailure) {
+          const diagnostic = { ...((retryError.extra?.diagnostic as object) ?? {}), attemptNumber: 2, firstFailureCode, retryPerformed: true, retrySucceeded: false, compatibilityRetry: compatibility };
+          retryError.extra = { ...retryError.extra, diagnostic };
+          console.log({ stage: 'provider-retry-failed', code: retryError.code, ...diagnostic });
+        }
+        throw retryError;
+      }
+      console.log({ stage: 'provider-retry-succeeded', attemptNumber: 2, firstFailureCode, retryPerformed: true, retrySucceeded: true, compatibilityRetry: compatibility });
     }
     const successPayload = {
       response: {

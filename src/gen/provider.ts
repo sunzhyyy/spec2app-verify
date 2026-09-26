@@ -32,6 +32,8 @@ export type GenerationErrorCode =
   | 'provider_timeout'
   | 'provider_invalid_response'
   | 'provider_empty_response'
+  | 'provider_empty_content'
+  | 'provider_invalid_json'
   | 'provider_schema_mismatch'
   | 'provider_output_truncated'
   | 'quota_exhausted'
@@ -240,7 +242,7 @@ export function parseProviderEnvelope(envelope: unknown, upstreamStatus: number,
   if (typeof content !== 'string') {
     throw new GenerationFailure('provider_invalid_response', 'The AI provider returned non-text message content.', true, { diagnostic: { ...diag().diagnostic, ...envelopeShape(envelope), request } });
   }
-  if (!content.trim()) throw new GenerationFailure('provider_empty_response', 'The AI provider returned empty message content.', true, diag());
+  if (!content.trim()) throw new GenerationFailure('provider_empty_content', 'The AI provider returned empty message content.', true, diag());
 
   const text = stripOuterFence(content);
   if (finishReason === 'length') {

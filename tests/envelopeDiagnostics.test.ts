@@ -38,10 +38,10 @@ describe('safe provider envelope diagnostics', () => {
 
   it('empty choices are diagnosed safely and request goes to the exact endpoint', async () => {
     const { body, urls, text, logs } = await run({ id: 'chatcmpl-ABC123', choices: [] });
-    expect(urls).toEqual(['https://api.deepseek.com/chat/completions']);
+    expect(urls).toEqual(['https://api.deepseek.com/chat/completions', 'https://api.deepseek.com/chat/completions']);
     expect(body.detail.code).toBe('provider_invalid_response');
     expect(body.detail.diagnostic).toMatchObject({ choicesType: 'array', choicesCount: 0, firstChoiceType: 'missing', messagePresent: false, contentType: 'missing' });
-    expect(body.detail.diagnostic.request).toEqual({ requestUrl: 'https://api.deepseek.com/chat/completions', requestedModel: 'deepseek-chat', streamValue: null, responseFormatType: 'json_object', maxTokensPresent: true, maxTokensValue: 8192 });
+    expect(body.detail.diagnostic.request).toEqual({ requestUrl: 'https://api.deepseek.com/chat/completions', requestedModel: 'deepseek-chat', streamValue: false, responseFormatType: 'json_object', maxTokensPresent: true, maxTokensValue: 8192 });
     expectNoLeak(text, logs);
   });
 
@@ -72,8 +72,12 @@ describe('safe provider envelope diagnostics', () => {
   it('non-object responses never leak raw content, HTML, prompt or credentials', async () => {
     for (const env of ['RAW_CONTENT ' + HTML + KEY, [HTML], null]) {
       const { body, text, logs } = await run(env);
-      expect(body.detail.code).toBe('provider_invalid_response');
-      expect(body.detail.diagnostic.responseJsonType).toBe(env === null ? 'null' : Array.isArray(env) ? 'array' : 'string');
+      if (env === null) {
+        expect(body.detail.code).toBe('provider_empty_response');
+        expect(body.detail.diagnostic.bodyIsLiteralNull).toBe(true);
+      } else {
+        expect(['provider_invalid_response', 'provider_invalid_json']).toContain(body.detail.code);
+      }
       expectNoLeak(text, logs);
     }
   });

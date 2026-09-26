@@ -44,15 +44,15 @@ describe('DeepSeek structured output', () => {
     expect(body.response.indexHtml).toContain('UNIQUE_HTML_MARKER');
   });
 
-  it('missing choices -> provider_invalid_response, no retry', async () => {
+  it('missing choices -> provider_invalid_response, retried once', async () => {
     const { body, calls } = await run([{ envelope: { id: 'x' } }]);
     expect(body.detail.code).toBe('provider_invalid_response');
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
-  it('empty content -> provider_empty_response after one retry', async () => {
+  it('empty content -> provider_empty_content after one retry', async () => {
     const { body, calls } = await run([{ content: '   ' }]);
-    expect(body.detail.code).toBe('provider_empty_response');
+    expect(body.detail.code).toBe('provider_empty_content');
     expect(calls).toHaveLength(2);
   });
 
