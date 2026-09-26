@@ -1,4 +1,5 @@
 import { APP_NAME, WORKFLOW_STAGES } from '@/domain/workflow';
+import { AI_MODE } from '@/ai/mode';
 
 export default function Index() {
   return (
@@ -7,6 +8,9 @@ export default function Index() {
         <p className="text-xs font-semibold uppercase tracking-wide text-[#1D5FD1]">Stage 2 · Engineering skeleton</p>
         <h1 className="mt-1 text-2xl font-semibold">{APP_NAME}</h1>
         <p className="mt-2 text-sm text-[#4B5260]">Tests define what done means. The core workflow is not implemented yet.</p>
+        <p className="mt-3 inline-block rounded border border-[#D9DCE1] px-2 py-1 font-mono text-xs" data-testid="ai-mode">
+          {AI_MODE === 'demo' ? 'Deterministic Demo Mode – no model call' : 'HTTP provider mode'}
+        </p>
         <ol className="mt-6 grid gap-2 sm:grid-cols-2">
           {WORKFLOW_STAGES.map((s, i) => (
             <li key={s} className="rounded-md border border-[#D9DCE1] px-3 py-2 text-sm">
