@@ -42,4 +42,5 @@ export const TESTS_LOCKED_STATES: readonly WorkflowStatus[] = [
   'verifying',
   'verification_failed',
   'verified',
+  'stopped',
 ];

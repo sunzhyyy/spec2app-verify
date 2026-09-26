@@ -19,6 +19,8 @@ export interface VerificationCheck {
   expected: string;
   /** Checks listed here must pass first; otherwise this check is reported as blocked and not run. */
   requires?: string[];
+  /** Definition paths this check depends on (used by bounded repair). */
+  paths?: string[];
   run: (ctx: { project: Project; def: AppDefinition; now: string }) => CheckOutcome;
 }
 
@@ -230,6 +232,18 @@ export const DEFAULT_CHECKS: VerificationCheck[] = [
       return R(true, `${e.json.length} bytes, valid`, `records=${e.data.benchmarkRecords.length}`);
     },
   },
+  {
+    id: 'VC-22', title: 'Required actions, filters, layout and states', expected: 'create/update/delete actions, hardware and precision filters, all 4 layout sections, and empty/no-results states exist.',
+    run: ({ def }) => {
+      const miss = [
+        ...['create', 'update', 'delete'].filter((a) => !def.actions.includes(a as never)).map((a) => `action ${a}`),
+        ...['hardwarePlatform', 'precision'].filter((f) => !def.filters.some((x) => x.field === f)).map((f) => `filter ${f}`),
+        ...['metrics', 'filters', 'form', 'table'].filter((x) => !def.layout.sections.includes(x as never)).map((x) => `section ${x}`),
+        ...(def.emptyState.title && def.noResults.title ? [] : ['state content']),
+      ];
+      return R(miss.length === 0, miss.length ? `missing ${miss.join(', ')}` : 'all present', `actions=${def.actions.join('/')}; sections=${def.layout.sections.join('/')}`);
+    },
+  },
 ];
 
 export function runChecks(project: Project, now: string, checks: VerificationCheck[] = DEFAULT_CHECKS): VerificationReport {
@@ -282,6 +296,6 @@ export function verifyProject(p: Project, now: string, checks: VerificationCheck
     },
     notice: report.passed
       ? `All ${report.results.length} checks passed. ${p.currentVersionId} is now the stable version.`
-      : `${bad} check(s) failed or were blocked. The candidate stays non-stable; the stable version is unchanged. Automatic repair is not part of Stage 3.`,
+      : `${bad} check(s) failed or were blocked. The candidate stays non-stable; the stable version is unchanged. Bounded repair can be reviewed below.`,
   };
 }

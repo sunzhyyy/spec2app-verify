@@ -45,3 +45,18 @@ Any static host (Vercel, Netlify, GitHub Pages) can serve `dist/`.
 - **Versions**: each generation creates a `candidate` version with a parent link. Only a candidate that passes verification becomes `stable`. A failed candidate never replaces the stable version.
 - **Verification**: `src/engine/verify.ts` runs 21 deterministic checks. Each result is passed, failed or blocked, with its expected result, observed result, evidence, version and timestamp. Automatic repair is not implemented.
 - **Export**: **Export JSON** checks the export against `ExportSchema` and blocks it if it would include any credential or endpoint.
+
+## Stage 4 – Bounded repair
+
+After a failed verification, the workspace shows a **Bounded repair** panel. The default is Deterministic Repair Mode, which makes no model call.
+
+1. **Propose repair.** This is available only when the latest report on the current candidate has failed or blocked checks, the approved tests are unchanged, the definition is valid, and fewer than 2 repairs have been applied.
+2. **Review.** Before anything changes, the panel shows the diagnosed cause, the affected definition paths, the expected improvement and the risk.
+3. **Apply as new candidate.** This creates a new version with `parentVersionId` pointing to the failed candidate. The stable version is never overwritten.
+4. **Run repair reverification.** This runs a targeted set of checks: the ones that failed before the repair, checks mapped to the changed paths, the mandatory core regression set (`CORE_REGRESSION_IDS`), and their prerequisites. Checks that are not re-run are listed as carried forward.
+
+Proposals are rejected before they are applied if any of the following is true: they are malformed, they change acceptance tests or their references, they touch paths unrelated to the failing checks or outside the repairable scope, they contain executable code, they remove required fields, actions, filters or metrics, or they fail schema validation.
+
+After reverification, each repair gets one of these results: `repaired`, `improved`, `no_improvement`, `repeated_failure` (same failure signature), `regression`, or `limit_reached`. Every result except `repaired` and `improved` stops the workflow. Limits: 2 repair attempts per approved baseline generation and 5 AI-assisted calls per project. An optional HTTP provider (`requestHttpRepair`) sends only a compact context and no secrets. Repair history is saved to localStorage and included in the validated JSON export (schema v2, `repair` section).
+
+Tests: `tests/repair.test.ts` covers scenarios A–E: constraint repair, bounded stop, regression, test immutability, and malformed or unavailable provider output.

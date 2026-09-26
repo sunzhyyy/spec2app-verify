@@ -1,17 +1,18 @@
 import { z } from 'zod';
 import {
-  AcceptanceTestSchema, AnalysisSchema, AppDefinitionSchema, AppRecordSchema, VerificationReportSchema, VersionSchema,
+  AcceptanceTestSchema, AnalysisSchema, REPAIR_LIMITS, RepairAttemptSchema, RepairProposalSchema, RepairRejectionSchema, AppDefinitionSchema, AppRecordSchema, VerificationReportSchema, VersionSchema,
   WorkflowStatusSchema, type Project,
 } from '../domain/project';
 import { APP_NAME } from '../domain/workflow';
+import { repairEligibility } from './repair';
 
-export const EXPORT_SCHEMA_VERSION = 1;
+export const EXPORT_SCHEMA_VERSION = 2;
 
 export const ExportSchema = z
   .object({
     exportSchemaVersion: z.literal(EXPORT_SCHEMA_VERSION),
     exportedAt: z.string().min(1),
-    product: z.object({ name: z.literal(APP_NAME), stage: z.literal(3) }).strict(),
+    product: z.object({ name: z.literal(APP_NAME), stage: z.literal(4) }).strict(),
     project: z.object({ id: z.string(), name: z.string(), createdAt: z.string(), updatedAt: z.string() }).strict(),
     originalRequirement: z.string(),
     structuredAnalysis: AnalysisSchema.nullable(),
@@ -29,8 +30,19 @@ export const ExportSchema = z
     counters: z.object({
       aiMode: z.enum(['demo', 'http']),
       aiAssistedCallCount: z.number().int().min(0),
-      repairAttemptCount: z.literal(0),
+      repairAttemptCount: z.number().int().min(0).max(REPAIR_LIMITS.maxRepairAttempts),
     }).strict(),
+    repair: z.object({
+      configuration: z.object({ maxRepairAttempts: z.literal(2), maxAiAssistedCalls: z.literal(5), defaultMode: z.literal('deterministic') }).strict(),
+      eligibility: z.object({ eligible: z.boolean(), reason: z.string() }).strict(),
+      attempts: z.array(RepairAttemptSchema),
+      rejections: z.array(RepairRejectionSchema),
+      pendingProposal: RepairProposalSchema.nullable(),
+      stopReason: z.string().nullable(),
+      finalCandidateVersionId: z.string().nullable(),
+      lastStableVersionId: z.string().nullable(),
+    }).strict(),
+    verificationReports: z.array(VerificationReportSchema),
   })
   .strict();
 export type ProjectExport = z.infer<typeof ExportSchema>;
@@ -42,7 +54,7 @@ export function buildExport(p: Project, now: string): { ok: true; data: ProjectE
   const candidate = {
     exportSchemaVersion: EXPORT_SCHEMA_VERSION,
     exportedAt: now,
-    product: { name: APP_NAME, stage: 3 },
+    product: { name: APP_NAME, stage: 4 },
     project: { id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt },
     originalRequirement: p.originalRequirement,
     structuredAnalysis: p.structuredAnalysis,
@@ -54,6 +66,17 @@ export function buildExport(p: Project, now: string): { ok: true; data: ProjectE
     versions: { currentVersionId: p.currentVersionId, stableVersionId: p.stableVersionId, history: p.versions },
     workflowStatus: p.workflowStatus,
     counters: { aiMode: p.aiMode, aiAssistedCallCount: p.aiAssistedCallCount, repairAttemptCount: p.repairAttemptCount },
+    repair: {
+      configuration: { maxRepairAttempts: REPAIR_LIMITS.maxRepairAttempts, maxAiAssistedCalls: REPAIR_LIMITS.maxAiAssistedCalls, defaultMode: 'deterministic' },
+      eligibility: repairEligibility(p),
+      attempts: p.repairAttempts,
+      rejections: p.repairRejections,
+      pendingProposal: p.pendingRepair,
+      stopReason: p.repairStopReason,
+      finalCandidateVersionId: p.currentVersionId,
+      lastStableVersionId: p.stableVersionId,
+    },
+    verificationReports: p.verificationReports,
   };
   const parsed = ExportSchema.safeParse(candidate);
   if (!parsed.success) return { ok: false, error: `Export failed validation: ${parsed.error.issues[0]?.message}` };

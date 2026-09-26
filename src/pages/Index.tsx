@@ -12,6 +12,7 @@ import { ConfirmDialog } from '@/renderer/ConfirmDialog';
 import { TrackerRenderer } from '@/renderer/TrackerRenderer';
 import { loadStore, resetStore, saveStore } from '@/store/projects';
 import { verifyProject } from '@/engine/verify';
+import RepairPanel from './RepairPanel';
 import { buildExport, exportFilename } from '@/engine/export';
 
 const now = () => new Date().toISOString();
@@ -175,6 +176,7 @@ export default function Index() {
                     <h2 className="font-semibold">5. Deterministic verification</h2>
                     <Button disabled={!project.applicationDefinition} onClick={() => apply(verifyProject(project, now()))}>Run verification</Button>
                   </div>
+                  <RepairPanel project={project} apply={apply} now={now} />
                   <ul className="space-y-1 text-sm">
                     {project.versions.map((v) => (
                       <li key={v.id}>• <b>{v.id}</b> – {v.lifecycleStatus}, verification {v.verificationStatus}, parent {v.parentVersionId ?? 'none'}</li>

@@ -9,6 +9,7 @@ import {
   type WorkflowStatus,
 } from '../domain/project';
 import { canTransition, STATUS_LABELS } from '../domain/workflow';
+import { testsDigest } from './digest';
 import { DEFAULT_REQUIREMENT, DemoAnalysisError, analyzeRequirement, generateDefinition, proposeTests } from './demo';
 
 export type ActionResult = { ok: true; project: Project; notice?: string } | { ok: false; error: string };
@@ -55,6 +56,10 @@ export function createProject(input: { id: string; name: string; now: string; re
     aiMode: 'demo',
     aiAssistedCallCount: 0,
     repairAttemptCount: 0,
+    repairAttempts: [],
+    repairRejections: [],
+    pendingRepair: null,
+    repairStopReason: null,
   };
 }
 
@@ -166,6 +171,7 @@ export function returnToTestEditing(p: Project, now: string): ActionResult {
       testsApprovedAt: null,
       applicationDefinition: null,
       currentVersionId: null,
+      pendingRepair: null,
       versions: p.versions.map((v) =>
         v.id === p.currentVersionId && v.lifecycleStatus === 'candidate' ? { ...v, verificationStatus: 'invalidated' as const } : v,
       ),
@@ -206,6 +212,9 @@ export function generate(p: Project, now: string, produce: DefinitionProducer = 
     project: move(generating, 'generated', now, {
       applicationDefinition: parsed.data,
       currentVersionId: versionId,
+      repairAttemptCount: 0,
+      pendingRepair: null,
+      repairStopReason: null,
       versions: [
         ...p.versions,
         {
@@ -217,6 +226,11 @@ export function generate(p: Project, now: string, produce: DefinitionProducer = 
           acceptanceTestIds: approvedIds,
           verificationStatus: 'pending',
           lifecycleStatus: 'candidate',
+          kind: 'baseline',
+          repairId: null,
+          repairAttemptNumber: 0,
+          changedDefinitionPaths: [],
+          acceptanceTestsDigest: testsDigest(p.acceptanceTests),
         },
       ],
     }),

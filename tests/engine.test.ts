@@ -156,8 +156,8 @@ describe('persistence', () => {
     expect(resetStore(s)).toBe(2);
     expect([...s.m.keys()]).toEqual(['unrelated']);
   });
-  it('rejects nonzero repairAttemptCount', () => {
-    const l = loadStore(mem({ [STORAGE_KEY]: serializeStore([{ ...generated(), repairAttemptCount: 1 as 0 }], null) }));
+  it('rejects repairAttemptCount above the limit of 2', () => {
+    const l = loadStore(mem({ [STORAGE_KEY]: serializeStore([{ ...generated(), repairAttemptCount: 3 }], null) }));
     expect(l.projects).toHaveLength(0);
   });
 });

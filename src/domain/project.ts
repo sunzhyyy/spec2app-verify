@@ -156,6 +156,9 @@ export const AppRecordSchema = z
   .catchall(z.union([z.string(), z.number(), z.boolean()]));
 export type AppRecord = z.infer<typeof AppRecordSchema>;
 
+/** Hard limits for bounded repair. Enforced by the engine and by the schemas below. */
+export const REPAIR_LIMITS = { maxRepairAttempts: 2, maxAiAssistedCalls: 5 } as const;
+
 export const VersionSchema = z.object({
   id: z.string().min(1),
   parentVersionId: z.string().nullable(),
@@ -165,6 +168,12 @@ export const VersionSchema = z.object({
   acceptanceTestIds: z.array(z.string()),
   verificationStatus: z.enum(['pending', 'passed', 'failed', 'invalidated']),
   lifecycleStatus: z.enum(['candidate', 'stable']),
+  /** Defaults keep Stage 3 stored data loadable. */
+  kind: z.enum(['baseline', 'repair']).default('baseline'),
+  repairId: z.string().nullable().default(null),
+  repairAttemptNumber: z.number().int().min(0).max(REPAIR_LIMITS.maxRepairAttempts).default(0),
+  changedDefinitionPaths: z.array(z.string()).default([]),
+  acceptanceTestsDigest: z.string().default(''),
 });
 export type Version = z.infer<typeof VersionSchema>;
 
@@ -186,8 +195,69 @@ export const VerificationReportSchema = z.object({
   createdAt: z.string(),
   passed: z.boolean(),
   results: z.array(VerificationResultSchema),
+  /** "targeted" reports ran only the selected checks; the rest are listed in carriedForward, not re-run. */
+  scope: z.enum(['full', 'targeted']).default('full'),
+  selection: z.array(z.object({ testId: z.string(), reason: z.string() })).default([]),
+  carriedForward: z.array(z.string()).default([]),
 });
 export type VerificationReport = z.infer<typeof VerificationReportSchema>;
+
+export const RepairChangeSchema = z.object({ path: z.string().min(1), value: z.unknown() }).strict();
+
+export const RepairProposalSchema = z
+  .object({
+    repairId: z.string().min(1),
+    sourceVersionId: z.string().min(1),
+    failedTestIds: z.array(z.string()),
+    blockedTestIds: z.array(z.string()),
+    diagnosedCause: z.string().min(1),
+    affectedDefinitionPaths: z.array(z.string().min(1)).min(1),
+    proposedChanges: z.array(RepairChangeSchema).min(1),
+    preservedRequirements: z.array(z.string()),
+    expectedImprovement: z.string().min(1),
+    regressionRisk: z.enum(['low', 'medium', 'high']),
+    repairMode: z.enum(['deterministic', 'http']),
+    createdAt: z.string().min(1),
+  })
+  .strict();
+export type RepairProposal = z.infer<typeof RepairProposalSchema>;
+
+export const REPAIR_OUTCOMES = [
+  'pending_reverification', 'repaired', 'improved', 'no_improvement', 'repeated_failure', 'regression', 'limit_reached',
+] as const;
+
+export const RepairAttemptSchema = z.object({
+  attemptNumber: z.number().int().min(1).max(REPAIR_LIMITS.maxRepairAttempts),
+  repairId: z.string().min(1),
+  repairMode: z.enum(['deterministic', 'http']),
+  sourceVersionId: z.string().min(1),
+  candidateVersionId: z.string().min(1),
+  sourceReportId: z.string().min(1),
+  reverificationReportId: z.string().nullable(),
+  failureSignatureBefore: z.string(),
+  failureSignatureAfter: z.string().nullable(),
+  failedCountBefore: z.number().int().min(0),
+  failedCountAfter: z.number().int().min(0).nullable(),
+  blockedCountBefore: z.number().int().min(0),
+  blockedCountAfter: z.number().int().min(0).nullable(),
+  changedDefinitionPaths: z.array(z.string()),
+  affectedTestIds: z.array(z.string()),
+  regressionTestIds: z.array(z.string()),
+  regressedTestIds: z.array(z.string()),
+  outcome: z.enum(REPAIR_OUTCOMES),
+  stopReason: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type RepairAttempt = z.infer<typeof RepairAttemptSchema>;
+
+export const RepairRejectionSchema = z.object({
+  repairId: z.string().nullable(),
+  repairMode: z.enum(['deterministic', 'http']),
+  sourceVersionId: z.string().nullable(),
+  reason: z.string().min(1),
+  createdAt: z.string(),
+});
+export type RepairRejection = z.infer<typeof RepairRejectionSchema>;
 
 export const ProjectSchema = z.object({
   id: z.string().min(1),
@@ -211,8 +281,12 @@ export const ProjectSchema = z.object({
   stableVersionId: z.string().nullable(),
   workflowStatus: WorkflowStatusSchema,
   aiMode: z.enum(['demo', 'http']),
-  aiAssistedCallCount: z.number().int().min(0),
-  /** Automatic repair is excluded from Stage 3, so this is always 0. */
-  repairAttemptCount: z.literal(0),
+  aiAssistedCallCount: z.number().int().min(0).max(REPAIR_LIMITS.maxAiAssistedCalls),
+  /** Applied repairs for the current baseline generation; reset only by a new approved generation. */
+  repairAttemptCount: z.number().int().min(0).max(REPAIR_LIMITS.maxRepairAttempts),
+  repairAttempts: z.array(RepairAttemptSchema).default([]),
+  repairRejections: z.array(RepairRejectionSchema).default([]),
+  pendingRepair: RepairProposalSchema.nullable().default(null),
+  repairStopReason: z.string().nullable().default(null),
 });
 export type Project = z.infer<typeof ProjectSchema>;
