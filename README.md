@@ -1,83 +1,54 @@
-# Spec2App Verify
+# AI Webpage Generator
 
-Turn a natural-language requirement into a test-defined, interactive mini application with deterministic verification and bounded repair.
+A general AI webpage generator that turns a natural-language idea into runnable HTML, CSS and JavaScript, previews it in a sandboxed iframe and preserves projects and versions across refreshes.
 
-**Principle: tests define what done means.**
-
-- Public demo: `<PUBLIC_DEMO_URL>` (to be added)
-- **The public Demo requires no login and no API key.** It runs in *Deterministic Demo Mode – no model call*, using an embedded AI benchmark example so you can review the whole workflow without calling an external model.
+- **Live Demo:** _<preview URL placeholder – set after publishing the brief-rebuild preview>_
+- **GitHub Repository:** _<repository URL>_
+- **Short Demo Guide:** open the app → click an example prompt → **Generate** (30–120 s) → interact with the page in the App Viewer → refresh the browser → the project, prompts, versions and in-app data are restored → type a follow-up change → **Apply change** creates v2 (v1 stays selectable).
 
 ## Workflow
-Define requirement → Review acceptance tests → Generate application → Verify behavior → Repair within limits → Promote a stable version
+Prompt → server endpoint → model writes `index.html`, `styles.css`, `script.js`, `README.md` as JSON → server validates → browser validates again → `PageResource` is created and saved → `previewHtml` runs in `<iframe sandbox="allow-scripts">`.
 
-1. **Define requirement.** Write the requirement, then analyze it into purpose, user, fields, rules and actions.
-2. **Review acceptance tests.** Edit the proposed tests, then approve them. Once approved, tests are locked.
-3. **Generate application.** A Zod-validated app definition is created and drawn by a bounded renderer. It becomes a `candidate` version.
-4. **Verify behavior.** Deterministic checks run against the candidate. Each check records its expected result, observed result and evidence.
-5. **Repair within limits.** If verification fails, you review a proposed repair before it is applied as a new candidate.
-6. **Promote a stable version.** Only a candidate that passes every required check becomes `stable`.
+## Server-side generation
+Two interchangeable endpoints share the same prompt and response schema:
 
-## Demo instructions (for reviewers)
-1. Open the app and click **New project**. The benchmark tracker requirement is pre-filled.
-2. Click **Analyze requirement**, review the tests, then **Approve test set**.
-3. **Generate application**, try out the tracker (add, edit, delete, filter), then **Run verification**.
-4. Look at the verification report and the Current/Stable version badges. **Export JSON** downloads the validated evidence.
-5. The repair flow appears after a failed verification. The fault scenarios that lead to repair are covered by the automated tests (see below).
+| Deployment | Route | Code | Provider |
+|---|---|---|---|
+| Atoms Cloud (default build) | `POST /api/v1/generate/page` | `app/backend/routers/generate.py`, `services/page_generator.py` | OpenAI-compatible provider if `AI_API_KEY` + `AI_BASE_URL` are set, otherwise the Atoms AI Hub model (`AI_MODEL`, default `gpt-5.4`) |
+| Vercel | `POST /api/generate` | `api/generate.ts`, `src/gen/provider.ts` | OpenAI-compatible (`AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`) |
 
-## Core capabilities
-- Requirement analysis and editable acceptance tests with an approval gate
-- Schema-validated app definition drawn by trusted, bounded components (no generated code is executed)
-- Deterministic verification with passed, failed or blocked results and evidence
-- Version history with parent links and separate candidate and stable lifecycles
-- Bounded, user-reviewed repair
-- Validated JSON export with an allow-list
+The request contains only `prompt`, compact `history` (earlier prompts) and `currentFiles` (for follow-ups). The response contains `title, summary, indexHtml, stylesCss, scriptJs, readme, generationNotes` plus `generationMode: "live"`, `providerInvoked: true`, `provider` and `receivedPrompt`. Malformed JSON, missing or empty files, Markdown fences and oversized files are rejected with a coded error (`timeout`, `quota_exhausted`, `provider_unavailable`, `malformed_json`, `schema_invalid`, `missing_files`, `empty_content`). No automatic retries are made.
 
-## Verification model
-`src/engine/verify.ts` runs deterministic checks (VC-01 … VC-22). These cover fields, validation rules, create/update/delete, filters, metrics, empty and no-results states, acceptance-test references and required capabilities (VC-22). A result can be passed, failed or blocked (a prerequisite failed). A failed candidate never replaces the stable version.
+## Live versus fallback
+A version is `live` only when the server confirms that it invoked the provider for the exact prompt that was sent and the files passed validation. The viewer shows “awaiting render” until the iframe reports `PAGE_READY` for that exact version. Fallback examples (todo, mortgage, portfolio) appear only after a failure, require a click, are labelled **“Saved fallback example – no live model call”**, and are stored with `generationMode: "fallback"`.
 
-## Bounded-repair rules
-- Repairs require user review, are limited to **two applied attempts** per approved baseline and can never overwrite the last stable version unless all required checks pass.
-- A proposal is rejected before it is applied if it is malformed, changes approved tests or their references, touches paths outside the failing scope, contains executable content, removes required capabilities or fails schema validation.
-- Reverification re-runs the failed checks, the checks mapped to the changed paths and a mandatory core regression set.
-- A candidate is promoted only if it passes schema validation, has no missing capabilities (`missingCapabilities()` is empty) and passes all selected checks.
-- Results are `repaired`, `improved`, `no_improvement`, `repeated_failure`, `regression` or `limit_reached`. A stop report lists the reason, remaining failed and blocked checks, the last stable version and a suggested next action.
-- The Demo uses deterministic repair with no model call.
+## PageResource
+`id, projectId, version, prompt, title, summary, indexHtml, stylesCss, scriptJs, readme, previewHtml, createdAt, generationMode, provider, kind (initial|followup), parentVersionId, renderVerified, generationNotes` — see `src/gen/core.ts`.
 
-## Technology stack
-React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, Zod, Vitest and GitHub Actions CI. The app is a static, client-side-only single-page app.
+## Sandbox and persistence bridge
+- The iframe uses `sandbox="allow-scripts"` only, with no `allow-same-origin`, so the generated page has an opaque origin and cannot read the parent DOM, host storage or credentials, and cannot navigate the parent. A CSP in `previewHtml` sets `connect-src 'none'`.
+- The generated page uses `await window.AppStorage.load()` and `window.AppStorage.save(state)`. Under the hood these send `{type:"LOAD_STATE"|"SAVE_STATE", projectId, versionId, …}` messages to the parent. The host checks that `event.source` is the current iframe, validates the message with a strict Zod schema, rejects payloads over 100 KB, and stores or returns state only for that project and version. The host replies with `STATE_LOADED`.
+
+## Host persistence
+localStorage key `ai-webpage-generator.workspace`, `schemaVersion: 1`: `{ projects[{prompts, versions(PageResource), selectedVersionId, createdAt, updatedAt}], selectedProjectId, appState{"projectId:versionId": {data, savedAt}} }`. Corrupted or incompatible data is backed up under `…corrupt-<ts>` and a fresh workspace is started. Data is stored only in this browser; there is no cross-device sync.
+
+## Follow-up editing
+After v1 exists, the input sends the instruction together with the current files. The new PageResource becomes v(n+1) with `parentVersionId`, and earlier versions stay in the Version selector.
 
 ## Local setup
-```bash
+```
 pnpm install --frozen-lockfile
-cp .env.example .env   # optional; leave VITE_AI_ENDPOINT empty for Demo Mode
-pnpm dev               # http://localhost:5173
+pnpm run lint && npx tsc -p tsconfig.app.json --noEmit && pnpm test && pnpm run build
 ```
 
-## Test and build
-| Purpose | Command |
-|---|---|
-| Lint | `pnpm lint` |
-| Type check | `pnpm typecheck` |
-| Test | `pnpm test` |
-| Build | `pnpm build` (output in `dist/`) |
-| Preview build | `pnpm preview` |
+## Environment variables (server only; never `VITE_*`)
+`AI_API_KEY`, `AI_BASE_URL` (for example `https://api.openai.com/v1`), `AI_MODEL`, and optionally `AI_TIMEOUT_MS` / `AI_TIMEOUT_SECONDS`. Frontend build switch (not a secret): `VITE_GENERATION_TARGET=vercel` makes the UI call `/api/generate`.
 
-Any static host can serve `dist/`.
-
-## Security boundaries
-- No secrets are stored in the repository or in the browser. The Demo needs no key.
-- Generated definitions are data, not code. Only trusted renderer components are used.
-- Exports are schema-validated and allow-listed, and are blocked if they would contain credentials or endpoints.
-- `Reset Spec2App data` removes only this app's localStorage keys.
-
-## Persistence limitation
-Projects are stored in this browser using versioned localStorage (`spec2app-verify:v1:store`, validated with Zod when loaded). Cross-device synchronization is not supported. If stored data is corrupted or uses a newer version, the app starts safely and shows a warning.
+## Vercel deployment
+Framework: Vite (React 18 + TS); functions: Node runtime (`api/generate.ts`). Install command: `pnpm install --frozen-lockfile`. Build command: `pnpm run build`. Output directory: `dist`. Set `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` and `VITE_GENERATION_TARGET=vercel` for the **Preview** environment and deploy the `brief-rebuild` branch as a preview. Production promotion is manual (“Promote to Production”) and should happen only after the P0 checks pass on the preview URL.
 
 ## Known limitations
-- Demo Mode covers one embedded benchmark domain. No live AI provider is configured in the public Demo.
-- Repair scenarios are covered by deterministic automated tests (`tests/repair.test.ts`, `tests/repairSafety.test.ts`). The repair interaction has not been manually tested end-to-end in a browser.
-- Single user, single browser. There is no authentication or collaboration.
-- This is a review demo, not a production-hardened service.
-
-## Structure
-`src/domain` (schemas and workflow), `src/engine` (generation, verification, repair, export), `src/renderer` (bounded UI), `src/store` (persistence), `src/ai` (mode selection), `src/pages`, `tests`, `.github/workflows/ci.yml`.
+- The Vercel path has only been tested with a mocked provider; it has not been deployed.
+- Generation takes 30–120 s, and the output quality depends on the model.
+- Generated pages cannot make network requests or load remote scripts.
+- Persistence is per browser.
