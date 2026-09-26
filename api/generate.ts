@@ -2,14 +2,14 @@
  * Vercel serverless function: POST /api/generate
  * Env (server-side only): AI_API_KEY, AI_BASE_URL, AI_MODEL. Keys are never returned or logged.
  */
-import { GenerationFailure, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
+import { GenerationFailure, type GenerationErrorCode, buildMessages, normalizeGeneratedContent, type GenerateRequestBody } from '../src/gen/provider';
 
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
-const STATUS: Record<string, number> = { timeout: 504, quota_exhausted: 429, invalid_request: 422, not_configured: 503 };
+const STATUS: Record<string, number> = { timeout: 504, quota_exhausted: 429, provider_rate_limited: 429, invalid_request: 422, not_configured: 503 };
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
-const fail = (e: GenerationFailure) => json(STATUS[e.code] ?? 502, { detail: { code: e.code, message: e.message, providerInvoked: e.providerInvoked } });
+const fail = (e: GenerationFailure) => json(STATUS[e.code] ?? 502, { detail: { code: e.code, message: e.message, providerInvoked: e.providerInvoked, ...(e.extra ?? {}) } });
 
 function readBody(raw: unknown): GenerateRequestBody {
   const b = raw as GenerateRequestBody;
@@ -18,6 +18,40 @@ function readBody(raw: unknown): GenerateRequestBody {
   }
   const history = Array.isArray(b.history) ? b.history.filter((h) => typeof h === 'string').slice(-12) : [];
   return { prompt: b.prompt.trim(), history, currentFiles: b.currentFiles ?? null };
+}
+
+/** Joins AI_BASE_URL and the chat path, tolerating trailing slashes or an already-appended path. */
+export function providerUrl(base: string): string {
+  const trimmed = base.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+  return `${trimmed}/chat/completions`;
+}
+
+const UPSTREAM: Record<number, GenerationErrorCode> = { 401: 'provider_unauthorized', 402: 'provider_payment_required', 403: 'provider_forbidden', 404: 'provider_not_found', 429: 'provider_rate_limited' };
+
+/** Removes secrets, URLs with query strings, and long tokens from a network error message. */
+export function sanitizeMessage(message: unknown, secrets: (string | undefined)[]): string {
+  let m = typeof message === 'string' ? message : '';
+  for (const s of secrets) if (s && s.length >= 4) m = m.split(s).join('[redacted]');
+  m = m.replace(/bearer\s+\S+/gi, 'Bearer [redacted]').replace(/(sk|key|token)[-_][A-Za-z0-9_-]{6,}/gi, '[redacted]').replace(/[A-Za-z0-9_-]{32,}/g, '[redacted]').replace(/\?[^\s]*/g, '');
+  return m.slice(0, 200);
+}
+
+/** Safe fetch-exception diagnostic: names, network code, host/path, elapsed. No key, headers, prompt or body. */
+export function fetchDiagnostic(e: unknown, url: string, elapsedMs: number, secrets: (string | undefined)[]) {
+  const err = (e ?? {}) as { name?: unknown; message?: unknown; cause?: { code?: unknown } };
+  let providerHost = '';
+  let providerPath = '';
+  try { const u = new URL(url); providerHost = u.hostname; providerPath = u.pathname; } catch { /* invalid base url */ }
+  const safe = (v: unknown) => (typeof v === 'string' ? v.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 60) : null);
+  return {
+    providerHost,
+    providerPath,
+    exceptionName: safe(err.name) ?? 'Unknown',
+    constructorName: safe((e as object | null)?.constructor?.name) ?? 'Unknown',
+    causeCode: safe(err.cause?.code),
+    message: sanitizeMessage(err.message, secrets),
+    elapsedMs,
+  };
 }
 
 const REQUIRED = ['title', 'summary', 'indexHtml', 'stylesCss', 'scriptJs', 'readme', 'generationNotes'] as const;
@@ -40,9 +74,11 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     const { AI_API_KEY: key, AI_BASE_URL: base, AI_MODEL: model = 'gpt-4o-mini' } = env;
     if (!key || !base) throw new GenerationFailure('not_configured', 'AI_API_KEY and AI_BASE_URL are not configured on the server.', false);
 
+    const url = providerUrl(base);
+    const fetchStarted = Date.now();
     let res: Response;
     try {
-      res = await fetchImpl(`${base.replace(/\/$/, '')}/chat/completions`, {
+      res = await fetchImpl(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
         body: JSON.stringify({ model, messages: buildMessages(body), temperature: 0.4 }),
@@ -51,10 +87,14 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     } catch (e) {
       const name = (e as Error).name;
       if (name === 'TimeoutError' || name === 'AbortError') throw new GenerationFailure('timeout', 'The AI provider timed out.', true);
-      throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true);
+      const diagnostic = fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]);
+      console.log({ stage: 'provider-fetch-exception', ...diagnostic });
+      throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
     }
-    if (res.status === 402 || res.status === 429) throw new GenerationFailure('quota_exhausted', `The AI provider rejected the request (HTTP ${res.status}).`, true);
-    if (!res.ok) throw new GenerationFailure('provider_unavailable', `The AI provider returned HTTP ${res.status}.`, true);
+    if (!res.ok) {
+      const code = UPSTREAM[res.status] ?? 'provider_http_error';
+      throw new GenerationFailure(code, `The AI provider returned HTTP ${res.status}.`, true, { upstreamStatus: res.status });
+    }
 
     const envelope = (await res.json().catch(() => null)) as { choices?: { message?: { content?: unknown } }[] } | null;
     const content = envelope?.choices?.[0]?.message?.content;

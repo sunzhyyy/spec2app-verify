@@ -21,6 +21,12 @@ Rules:
 export type GenerationErrorCode =
   | 'timeout'
   | 'quota_exhausted'
+  | 'provider_unauthorized'
+  | 'provider_payment_required'
+  | 'provider_forbidden'
+  | 'provider_not_found'
+  | 'provider_rate_limited'
+  | 'provider_http_error'
   | 'provider_unavailable'
   | 'malformed_json'
   | 'schema_invalid'
@@ -35,6 +41,7 @@ export class GenerationFailure extends Error {
     public code: GenerationErrorCode,
     message: string,
     public providerInvoked: boolean,
+    public extra?: Record<string, unknown>,
   ) {
     super(message);
   }
