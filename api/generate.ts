@@ -106,7 +106,21 @@ export function assertSuccessContract(payload: unknown): void {
   }
 }
 
-export async function handleGenerate(request: Request, env: Record<string, string | undefined> = nodeEnv, fetchImpl: typeof fetch = fetch): Promise<Response> {
+/** Platform-specific fetch extras. Only EdgeOne supplies `eo`; Vercel and Node pass nothing. */
+export interface ProviderFetchOptions {
+  /** Extra RequestInit fields merged into the provider fetch (e.g. EdgeOne `eo.timeoutSetting`). */
+  extraInit?: Record<string, unknown>;
+  /** Lower bound for the portable AbortController timeout so it never fires before the platform timeout. */
+  minTimeoutMs?: number;
+}
+
+/** True when a runtime error signals a platform read/connect timeout (EdgeOne reports `net_exception_timeout`). */
+export function isPlatformTimeout(e: unknown): boolean {
+  const m = `${(e as { name?: unknown })?.name ?? ''} ${(e as { message?: unknown })?.message ?? ''}`;
+  return /net_exception_timeout|TimeoutError/i.test(m);
+}
+
+export async function handleGenerate(request: Request, env: Record<string, string | undefined> = nodeEnv, fetchImpl: typeof fetch = fetch, opts: ProviderFetchOptions = {}): Promise<Response> {
   const started = Date.now();
   try {
     const body = readBody(await request.json().catch(() => null));
@@ -115,7 +129,7 @@ export async function handleGenerate(request: Request, env: Record<string, strin
 
     const url = providerUrl(base);
     const fetchStarted = Date.now();
-    const timeoutMs = Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS;
+    const timeoutMs = Math.max(Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS, opts.minTimeoutMs ?? 0);
     // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
     const maxTokens = Math.floor(Number(env.AI_MAX_TOKENS)) > 0 ? Math.floor(Number(env.AI_MAX_TOKENS)) : DEFAULT_MAX_TOKENS;
     const baseConfig = { model, stream: false, temperature: 0.4, max_tokens: maxTokens };
@@ -135,15 +149,16 @@ export async function handleGenerate(request: Request, env: Record<string, strin
         let res: Response;
         try {
           res = await fetchImpl(url, {
+            ...(opts.extraInit ?? {}),
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
             body: JSON.stringify({ ...requestConfig, messages: buildMessages(body, strict) }),
             signal: controller.signal,
-          });
+          } as RequestInit);
         } catch (e) {
           const diagnostic = { ...fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]), timeoutTriggered };
           console.log({ stage: 'provider-fetch-exception', ...diagnostic });
-          if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
+          if (timeoutTriggered || isPlatformTimeout(e)) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
           throw new GenerationFailure('provider_unavailable', 'Could not reach the AI provider.', true, { diagnostic });
         }
         if (!res.ok) {
@@ -156,7 +171,7 @@ export async function handleGenerate(request: Request, env: Record<string, strin
           rawBody = await res.text();
         } catch (e) {
           const diagnostic = { ...fetchDiagnostic(e, url, Date.now() - fetchStarted, [key, base, body.prompt]), timeoutTriggered, upstreamStatus: res.status };
-          if (timeoutTriggered) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
+          if (timeoutTriggered || isPlatformTimeout(e)) throw new GenerationFailure('provider_timeout', 'The AI provider timed out.', true, { diagnostic });
           throw new GenerationFailure('provider_unavailable', 'Could not read the AI provider response.', true, { diagnostic });
         }
         meta = bodyMeta(res.status, contentType, rawBody);
