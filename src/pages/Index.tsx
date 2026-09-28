@@ -1,228 +1,350 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Badge } from '@/components/ui/badge';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import type { AcceptanceTest, Project } from '@/domain/project';
-import { APP_NAME, STATUS_LABELS, TESTS_LOCKED_STATES } from '@/domain/workflow';
-import { DEMO_MODE_LABEL } from '@/engine/demo';
-import * as A from '@/engine/actions';
-import { ConfirmDialog } from '@/renderer/ConfirmDialog';
-import { TrackerRenderer } from '@/renderer/TrackerRenderer';
-import { loadStore, resetStore, saveStore } from '@/store/projects';
-import { verifyProject } from '@/engine/verify';
-import RepairPanel from './RepairPanel';
-import { buildExport, exportFilename } from '@/engine/export';
+import { FALLBACK_LABEL, IFRAME_SANDBOX, createPageResource, modeLabel, validateBridgeMessage, type GeneratedFiles, type PageResource } from '@/gen/core';
+import { requestGeneration } from '@/gen/api';
+import { FALLBACK_EXAMPLES } from '@/gen/fallback';
+import { GenerationFailure } from '@/gen/provider';
+import {
+  addVersion,
+  createProject,
+  getAppState,
+  loadWorkspace,
+  markRendered,
+  recordFailedPrompt,
+  saveWorkspace,
+  selectVersion,
+  setAppState,
+  type Workspace,
+} from '@/gen/store';
 
-const now = () => new Date().toISOString();
-const TEXT_KEYS: (keyof AcceptanceTest)[] = ['title', 'requirementReference', 'precondition', 'action', 'expectedResult'];
+const EXAMPLES = [
+  'Create a todo board with priorities and due dates. Users can add, complete and delete tasks.',
+  'Create a mortgage calculator with loan amount, annual interest rate, loan term and monthly payment.',
+  'Create a personal portfolio with a hero section, projects, skills and a contact form.',
+];
+const FILE_TABS: { key: keyof GeneratedFiles | 'preview'; label: string }[] = [
+  { key: 'preview', label: 'Preview' },
+  { key: 'indexHtml', label: 'index.html' },
+  { key: 'stylesCss', label: 'styles.css' },
+  { key: 'scriptJs', label: 'script.js' },
+  { key: 'readme', label: 'README.md' },
+];
+const fmt = (iso: string) => new Date(iso).toLocaleString();
+
+interface FailedAttempt {
+  prompt: string;
+  kind: 'initial' | 'followup';
+  error: GenerationFailure;
+}
 
 export default function Index() {
-  const initial = useMemo(() => loadStore(localStorage), []);
-  const [projects, setProjects] = useState<Project[]>(initial.projects);
-  const [selectedId, setSelectedId] = useState<string | null>(initial.selectedProjectId);
-  const [message, setMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(
-    initial.warning ? { kind: 'error', text: initial.warning } : null,
-  );
-  const [confirmUnlock, setConfirmUnlock] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const doReset = () => {
-    const n = resetStore(localStorage);
-    setProjects([]);
-    setSelectedId(null);
-    setConfirmReset(false);
-    setMessage({ kind: 'info', text: `Spec2App Verify data cleared (${n} key(s)). Other browser storage was not touched.` });
-  };
-  const doExport = (p: Project) => {
-    const e = buildExport(p, now());
-    if ('error' in e) return setMessage({ kind: 'error', text: e.error });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([e.json], { type: 'application/json' }));
-    a.download = exportFilename(p);
-    a.click();
-    URL.revokeObjectURL(a.href);
-    setMessage({ kind: 'info', text: `Exported ${a.download} (validated).` });
-  };
-  useEffect(() => saveStore(localStorage, projects, selectedId), [projects, selectedId]);
+  const initial = useMemo(() => loadWorkspace(), []);
+  const [ws, setWs] = useState<Workspace>(initial.workspace);
+  const [notice, setNotice] = useState<string | null>(initial.warning);
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [failed, setFailed] = useState<FailedAttempt | null>(null);
+  const [tab, setTab] = useState<(typeof FILE_TABS)[number]['key']>('preview');
+  const [frameKey, setFrameKey] = useState(0);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const wsRef = useRef(ws);
+  wsRef.current = ws;
 
-  const project = projects.find((p) => p.id === selectedId) ?? null;
-  const apply = (r: A.ActionResult) => {
-    if ('error' in r) return setMessage({ kind: 'error', text: r.error });
-    setProjects((ps) => ps.map((p) => (p.id === r.project.id ? r.project : p)));
-    setMessage(r.notice ? { kind: 'info', text: r.notice } : null);
-  };
-  const create = () => {
-    const p = A.createProject({ id: crypto.randomUUID(), name: `Project ${projects.length + 1}`, now: now() });
-    setProjects([...projects, p]);
-    setSelectedId(p.id);
-    setMessage(null);
+  const commit = useCallback((fn: (w: Workspace) => Workspace) => {
+    setWs((prev) => {
+      const next = fn(prev);
+      const err = saveWorkspace(next);
+      if (err) setNotice(err);
+      return next;
+    });
+  }, []);
+
+  const project = ws.projects.find((p) => p.id === ws.selectedProjectId) ?? null;
+  const page: PageResource | null = project?.versions.find((v) => v.id === project.selectedVersionId) ?? null;
+
+  useEffect(() => {
+    if (!busy) return;
+    const start = Date.now();
+    const t = setInterval(() => setElapsed(Math.round((Date.now() - start) / 1000)), 500);
+    return () => clearInterval(t);
+  }, [busy]);
+
+  // Narrow persistence bridge: only LOAD_STATE / SAVE_STATE / PAGE_READY from the current iframe.
+  useEffect(() => {
+    if (!page) return;
+    const expected = { projectId: page.projectId, versionId: page.id };
+    const onMessage = (event: MessageEvent) => {
+      const frame = iframeRef.current?.contentWindow;
+      if (!frame || event.source !== frame) return;
+      const msg = validateBridgeMessage(event.data, expected);
+      if (!msg) return;
+      if (msg.type === 'LOAD_STATE') {
+        frame.postMessage({ type: 'STATE_LOADED', ...expected, requestId: msg.requestId, payload: getAppState(wsRef.current, expected.projectId, expected.versionId) }, '*');
+      } else if (msg.type === 'SAVE_STATE') {
+        commit((w) => setAppState(w, expected.projectId, expected.versionId, msg.payload));
+      } else {
+        commit((w) => markRendered(w, expected.projectId, expected.versionId));
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [page, commit]);
+
+  const newProject = () => {
+    commit((w) => createProject(w).ws);
+    setPrompt('');
+    setFailed(null);
+    setTab('preview');
   };
 
-  const locked = project ? TESTS_LOCKED_STATES.includes(project.workflowStatus) : true;
-  const testIssues = project ? A.validateTests(project.acceptanceTests) : {};
-  const editTest = (i: number, patch: Partial<AcceptanceTest>) =>
-    project && apply(A.updateTests(project, project.acceptanceTests.map((t, j) => (j === i ? { ...t, ...patch } : t)), now()));
+  const run = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || busy) return;
+    let target = project;
+    let base = ws;
+    if (!target) {
+      const created = createProject(ws);
+      base = created.ws;
+      target = created.project;
+      commit(() => base);
+    }
+    const kind: 'initial' | 'followup' = page ? 'followup' : 'initial';
+    const current = page;
+    const projectId = target.id;
+    const history = target.prompts.filter((p) => p.status === 'ok').map((p) => p.text);
+    setBusy(true);
+    setElapsed(0);
+    setFailed(null);
+    try {
+      const res = await requestGeneration({
+        prompt: trimmed,
+        history,
+        currentFiles: current ? { indexHtml: current.indexHtml, stylesCss: current.stylesCss, scriptJs: current.scriptJs, readme: current.readme } : null,
+      });
+      commit((w) => {
+        const p = w.projects.find((x) => x.id === projectId)!;
+        return addVersion(
+          w,
+          createPageResource({ projectId, version: p.versions.length + 1, prompt: trimmed, kind, parentVersionId: current?.id ?? null, mode: 'live', provider: res.provider, files: res }),
+        );
+      });
+      setPrompt('');
+      setTab('preview');
+    } catch (e) {
+      const err = e instanceof GenerationFailure ? e : new GenerationFailure('network', String(e), false);
+      setFailed({ prompt: trimmed, kind, error: err });
+      commit((w) => recordFailedPrompt(w, projectId, trimmed, kind, `${err.code}: ${err.message}`));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyFallback = (key: keyof typeof FALLBACK_EXAMPLES) => {
+    if (!failed || !project) return;
+    const projectId = project.id;
+    const f = failed;
+    commit((w) => {
+      const p = w.projects.find((x) => x.id === projectId)!;
+      return addVersion(
+        w,
+        createPageResource({ projectId, version: p.versions.length + 1, prompt: f.prompt, kind: f.kind, parentVersionId: page?.id ?? null, mode: 'fallback', provider: 'none', files: FALLBACK_EXAMPLES[key] }),
+      );
+    });
+    setFailed(null);
+    setTab('preview');
+  };
+
+  const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-        <h1 className="text-xl font-bold">{APP_NAME}</h1>
-        <Badge variant="secondary">{DEMO_MODE_LABEL}</Badge>
-      </header>
-      <div className="flex flex-col md:flex-row">
-        <aside className="space-y-2 border-b p-4 md:w-60 md:border-b-0 md:border-r">
-          <Button className="w-full" onClick={create}>New project</Button>
-          <nav aria-label="Projects" className="flex gap-2 overflow-x-auto md:flex-col">
-            {projects.map((p) => (
-              <button key={p.id} onClick={() => setSelectedId(p.id)} className={`shrink-0 rounded-md px-3 py-2 text-left text-sm ${p.id === selectedId ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>
-                {p.name}
-                <span className="block text-xs opacity-80">{STATUS_LABELS[p.workflowStatus]}</span>
+    <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900 lg:h-screen lg:flex-row">
+      <aside className={`flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-52 lg:border-b-0 lg:border-r ${expanded ? 'hidden' : ''}`}>
+        <div className="p-3">
+          <Button className="w-full" onClick={newProject} disabled={busy}>
+            + New Project
+          </Button>
+        </div>
+        <nav className="max-h-40 flex-1 overflow-y-auto px-2 pb-3 lg:max-h-none" aria-label="Saved projects">
+          {ws.projects.length === 0 && <p className="px-2 text-sm text-slate-500">No saved projects yet.</p>}
+          {ws.projects.map((p) => {
+            const active = p.id === ws.selectedProjectId;
+            return (
+              <button
+                key={p.id}
+                onClick={() => !busy && commit((w) => ({ ...w, selectedProjectId: p.id }))}
+                aria-current={active ? 'true' : undefined}
+                className={`mb-1 w-full rounded-md border px-3 py-2 text-left text-sm ${active ? 'border-indigo-500 bg-indigo-50' : 'border-transparent hover:bg-slate-100'}`}
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  {active && <span className="h-2 w-2 rounded-full bg-indigo-600" aria-label="Selected" />}
+                  <span className="truncate">{p.name}</span>
+                </div>
+                <div className="mt-1 text-xs text-slate-500">Created {fmt(p.createdAt)}</div>
+                <div className="text-xs text-slate-500">Updated {fmt(p.updatedAt)}</div>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+
+      <main className={`flex w-full flex-col overflow-y-auto border-slate-200 p-4 lg:w-[340px] lg:shrink-0 lg:border-r ${expanded ? 'hidden' : ''}`}>
+        <h1 className="text-xl font-semibold">AI Webpage Generator</h1>
+        <p className="mt-1 text-sm text-slate-600">Describe a webpage application. AI generates runnable HTML, CSS and JavaScript and previews the application here.</p>
+        {notice && (
+          <div role="alert" className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+            {notice}{' '}
+            <button className="underline" onClick={() => setNotice(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {!page && (
+          <div className="mt-4 space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Example prompts</p>
+            {EXAMPLES.map((ex, i) => (
+              <button key={ex} onClick={() => setPrompt(ex)} className="block w-full rounded-md border border-slate-200 bg-white p-2 text-left text-sm hover:border-indigo-400">
+                {i + 1}. {ex}
               </button>
             ))}
-          </nav>
-          <Button variant="outline" size="sm" className="w-full" onClick={() => setConfirmReset(true)}>Reset Spec2App data</Button>
-          <p className="text-xs text-muted-foreground">Data is stored only in this browser (localStorage). It is not synced across devices.</p>
-        </aside>
-        <main className="min-w-0 flex-1 space-y-6 p-4">
-          {message && (
-            <p role={message.kind === 'error' ? 'alert' : 'status'} className={`rounded-md border p-3 text-sm ${message.kind === 'error' ? 'border-destructive text-destructive' : 'border-primary/40'}`}>
-              {message.text}
-            </p>
-          )}
-          {!project ? (
-            <div className="rounded-lg border border-dashed p-10 text-center">
-              <p className="font-medium">No project selected</p>
-              <p className="text-sm text-muted-foreground">Create a project to turn a requirement into a verified application.</p>
-            </div>
-          ) : (
-            <>
-              <section className="space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Input aria-label="Project name" className="max-w-xs" value={project.name} onChange={(e) => apply({ ok: true, project: { ...project, name: e.target.value || 'Untitled', updatedAt: now() } })} />
-                  <Badge>{STATUS_LABELS[project.workflowStatus]}</Badge>
-                  <Badge variant="outline">Current: {project.currentVersionId ? `${project.currentVersionId} (${project.versions.find((v) => v.id === project.currentVersionId)?.lifecycleStatus})` : 'none'}</Badge>
-                  <Badge variant="outline">Stable: {project.stableVersionId ?? 'none'}</Badge>
-                  <Button size="sm" variant="outline" onClick={() => doExport(project)}>Export JSON</Button>
-                </div>
-                <Label htmlFor="req">1. Requirement</Label>
-                <Textarea id="req" rows={4} value={project.originalRequirement} disabled={project.workflowStatus !== 'draft'} onChange={(e) => apply(A.setRequirement(project, e.target.value, now()))} />
-                <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => apply(A.analyze(project, now()))} disabled={project.workflowStatus !== 'draft'}>Analyze requirement</Button>
-                  {(project.workflowStatus === 'analyzed' || project.workflowStatus === 'awaiting_test_approval') && (
-                    <Button variant="outline" onClick={() => apply(A.editRequirement(project, now()))}>Edit requirement</Button>
-                  )}
-                </div>
-              </section>
+          </div>
+        )}
 
-              {project.structuredAnalysis && (
-                <section className="space-y-2 rounded-lg border p-4">
-                  <h2 className="font-semibold">2. Structured analysis</h2>
-                  <p className="text-sm"><b>Purpose:</b> {project.structuredAnalysis.purpose}</p>
-                  <p className="text-sm"><b>User:</b> {project.structuredAnalysis.primaryUser}</p>
-                  <ul className="grid gap-1 text-sm sm:grid-cols-2">
-                    {project.structuredAnalysis.dataFields.map((f) => <li key={f.key}>• <b>{f.label}</b> ({f.type}{f.unit ? `, ${f.unit}` : ''}) – {f.rule}</li>)}
-                  </ul>
-                  <p className="text-sm"><b>Filters:</b> {project.structuredAnalysis.filters.join(', ')} · <b>Metrics:</b> {project.structuredAnalysis.calculatedMetrics.join(', ')}</p>
-                  {project.workflowStatus === 'analyzed' && <Button onClick={() => apply(A.proposeAcceptanceTests(project, now()))}>Propose acceptance tests</Button>}
-                </section>
-              )}
-
-              {project.acceptanceTests.length > 0 && (
-                <section className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="font-semibold">3. Acceptance tests ({project.acceptanceTests.length}) {locked && <Badge variant="outline">Locked</Badge>}</h2>
-                    <div className="flex flex-wrap gap-2">
-                      {!locked && <Button variant="outline" onClick={() => apply(A.updateTests(project, [...project.acceptanceTests, A.blankTest(project.acceptanceTests)], now()))}>Add test</Button>}
-                      {!locked && <Button onClick={() => apply(A.approveTests(project, now()))}>Approve test set</Button>}
-                      {locked && <Button variant="outline" onClick={() => setConfirmUnlock(true)}>Return to test editing</Button>}
-                    </div>
-                  </div>
-                  {project.acceptanceTests.map((t, i) => (
-                    <div key={t.id} className="space-y-2 rounded-lg border p-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="secondary">{t.id}</Badge>
-                        {t.approved && <Badge>Approved</Badge>}
-                        <select aria-label={`${t.id} verification type`} disabled={locked} className="h-8 rounded border bg-background px-2 text-sm" value={t.verificationType} onChange={(e) => editTest(i, { verificationType: e.target.value as AcceptanceTest['verificationType'] })}>
-                          <option value="automated">automated</option><option value="manual">manual</option>
-                        </select>
-                        <select aria-label={`${t.id} priority`} disabled={locked} className="h-8 rounded border bg-background px-2 text-sm" value={t.priority} onChange={(e) => editTest(i, { priority: e.target.value as AcceptanceTest['priority'] })}>
-                          <option value="high">high</option><option value="medium">medium</option><option value="low">low</option>
-                        </select>
-                        {!locked && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => apply(A.updateTests(project, project.acceptanceTests.filter((_, j) => j !== i), now()))}>Remove</Button>}
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {TEXT_KEYS.map((k) => (
-                          <Input key={k} aria-label={`${t.id} ${k}`} placeholder={k} disabled={locked} value={String(t[k])} onChange={(e) => editTest(i, { [k]: e.target.value })} />
-                        ))}
-                      </div>
-                      {testIssues[t.id] && <p className="text-xs text-destructive">{testIssues[t.id].join('; ')}</p>}
-                    </div>
-                  ))}
-                  {project.workflowStatus === 'approved' && <Button onClick={() => apply(A.generate(project, now()))}>Generate application</Button>}
-                </section>
-              )}
-
-              {project.applicationDefinition && (
-                <section className="space-y-2 rounded-lg border p-4">
-                  <h2 className="font-semibold">4. Generated application preview</h2>
-                  <TrackerRenderer key={project.currentVersionId ?? ''} definition={project.applicationDefinition} records={project.applicationRecords} onChange={(r) => apply(A.updateRecords(project, r, now()))} />
-                </section>
-              )}
-
-              {(project.applicationDefinition || project.versions.length > 0) && (
-                <section className="space-y-3 rounded-lg border p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="font-semibold">5. Deterministic verification</h2>
-                    <Button disabled={!project.applicationDefinition} onClick={() => apply(verifyProject(project, now()))}>Run verification</Button>
-                  </div>
-                  <RepairPanel project={project} apply={apply} now={now} />
-                  <ul className="space-y-1 text-sm">
-                    {project.versions.map((v) => (
-                      <li key={v.id}>• <b>{v.id}</b> – {v.lifecycleStatus}, verification {v.verificationStatus}, parent {v.parentVersionId ?? 'none'}</li>
-                    ))}
-                  </ul>
-                  {(() => {
-                    const rep = project.verificationReports.at(-1);
-                    if (!rep) return <p className="text-sm text-muted-foreground">No verification run yet.</p>;
-                    const c = (s: string) => rep.results.filter((r) => r.status === s).length;
-                    return (
-                      <div className="space-y-2">
-                        <p className="text-sm">Report {rep.id} for {rep.versionId}: <b>{c('passed')} passed</b>, {c('failed')} failed, {c('blocked')} blocked</p>
-                        {rep.results.map((r) => (
-                          <div key={r.testId} className="rounded border p-2 text-xs">
-                            <Badge variant={r.status === 'passed' ? 'default' : r.status === 'failed' ? 'destructive' : 'secondary'}>{r.status}</Badge>{' '}
-                            <b>{r.testId} {r.title}</b>
-                            <p>Expected: {r.expectedResult}</p>
-                            <p>Observed: {r.observedResult}</p>
-                            <p className="text-muted-foreground">Evidence: {r.evidence}</p>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                </section>
-              )}
-              <ConfirmDialog
-                open={confirmUnlock}
-                title="Return to test editing?"
-                description="Tests will be unlocked, and any generated candidate application will be invalidated until tests are approved again."
-                confirmLabel="Unlock tests"
-                onCancel={() => setConfirmUnlock(false)}
-                onConfirm={() => { setConfirmUnlock(false); apply(A.returnToTestEditing(project, now())); }}
-              />
-            </>
-          )}
-          <ConfirmDialog
-            open={confirmReset}
-            title="Reset all Spec2App Verify data?"
-            description="All projects, tests, records, versions and reports stored by Spec2App Verify in this browser will be deleted. Other localStorage data is kept."
-            confirmLabel="Reset"
-            onCancel={() => setConfirmReset(false)}
-            onConfirm={doReset}
+        <form
+          className="mt-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(prompt);
+          }}
+        >
+          <label htmlFor="prompt" className="text-sm font-medium">
+            {page ? 'Follow-up modification' : 'Webpage idea'}
+          </label>
+          <Textarea
+            id="prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={page ? 'e.g. Change the primary color to blue and add a search filter.' : 'Describe the webpage you want…'}
+            rows={4}
+            className="mt-1 bg-white"
+            disabled={busy}
           />
-        </main>
-      </div>
+          <Button type="submit" className="mt-2 w-full" disabled={busy || !prompt.trim()}>
+            {busy ? 'Generating…' : page ? 'Apply change (new version)' : 'Generate'}
+          </Button>
+        </form>
+
+        {busy && (
+          <div role="status" className="mt-3 rounded-md bg-indigo-50 p-3 text-sm text-indigo-900">
+            Server is calling the AI model to write index.html, styles.css and script.js… {elapsed}s (typically 30–120s)
+            <div className="mt-2 h-1 overflow-hidden rounded bg-indigo-100">
+              <div className="h-full w-1/3 animate-pulse bg-indigo-500" />
+            </div>
+          </div>
+        )}
+
+        {failed && (
+          <div role="alert" className="mt-3 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+            <p className="font-semibold">Generation failed ({failed.error.code})</p>
+            <p className="mt-1">{failed.error.message}</p>
+            <p className="mt-1 text-xs">The last valid version was kept unchanged.</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => void run(failed.prompt)}>
+                Retry live generation
+              </Button>
+            </div>
+            <p className="mt-3 text-xs font-medium">Or explicitly use a saved example ({FALLBACK_LABEL}):</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {(Object.keys(FALLBACK_EXAMPLES) as (keyof typeof FALLBACK_EXAMPLES)[]).map((k) => (
+                <Button key={k} size="sm" variant="outline" className="!bg-transparent text-red-900" onClick={() => applyFallback(k)}>
+                  Use {k} fallback
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {project && project.prompts.length > 0 && (
+          <section className="mt-5">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Prompt history</h2>
+            <ol className="mt-2 space-y-2">
+              {project.prompts.map((q) => {
+                const v = project.versions.find((x) => x.id === q.versionId);
+                return (
+                  <li key={q.id} className={`rounded-md border bg-white p-2 text-sm ${q.status === 'error' ? 'border-red-200' : 'border-slate-200'}`}>
+                    <div className="text-xs text-slate-500">
+                      {q.kind === 'followup' ? 'Follow-up' : 'Initial'} · {fmt(q.createdAt)}
+                      {v && ` · v${v.version} · ${v.generationMode}`}
+                    </div>
+                    <p className="mt-1">{q.text}</p>
+                    {q.error && <p className="mt-1 text-xs text-red-700">{q.error}</p>}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        )}
+      </main>
+
+      <section className={`flex flex-1 flex-col ${expanded ? 'h-screen' : 'min-h-[80vh] lg:min-h-0'}`} aria-label="App Viewer">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 text-sm">
+          <strong>App Viewer</strong>
+          {project && project.versions.length > 0 && (
+            <select
+              aria-label="Version"
+              value={page?.id}
+              onChange={(e) => commit((w) => selectVersion(w, project.id, e.target.value))}
+              className="rounded border border-slate-300 bg-white px-2 py-1"
+            >
+              {project.versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  v{v.version} · {v.generationMode} · {v.title}
+                </option>
+              ))}
+            </select>
+          )}
+          {page && (
+            <span className={`rounded px-2 py-0.5 text-xs font-medium ${page.generationMode === 'live' ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900'}`} data-testid="mode-label">
+              {modeLabel(page)}
+            </span>
+          )}
+          <div className="ml-auto flex gap-1">
+            <Button size="sm" variant="outline" className="!bg-transparent" onClick={() => setExpanded((x) => !x)} aria-pressed={expanded}>
+              {expanded ? 'Exit full view' : 'Expand viewer'}
+            </Button>
+            {page &&
+              FILE_TABS.map((t) => (
+                <button key={t.key} onClick={() => setTab(t.key)} className={`rounded px-2 py-1 text-xs ${tab === t.key ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}>
+                  {t.label}
+                </button>
+              ))}
+            <Button size="sm" variant="outline" className="!bg-transparent" disabled={!page} onClick={() => { setTab('preview'); setFrameKey((k) => k + 1); }}>
+              Refresh preview
+            </Button>
+          </div>
+        </div>
+        <div className="relative flex-1 bg-slate-100">
+          {!page && <div className="flex h-full items-center justify-center p-6 text-center text-sm text-slate-500">Your generated webpage will run here in a sandboxed iframe.</div>}
+          {page && tab === 'preview' && (
+            <iframe
+              key={`${page.id}-${frameKey}`}
+              ref={iframeRef}
+              title={`Generated page v${page.version}`}
+              sandbox={IFRAME_SANDBOX}
+              srcDoc={page.previewHtml}
+              className="absolute inset-0 h-full w-full border-0 bg-white"
+            />
+          )}
+          {page && tab !== 'preview' && <pre className="absolute inset-0 overflow-auto whitespace-pre-wrap bg-slate-950 p-4 text-xs text-slate-100">{page[tab]}</pre>}
+        </div>
+        {page && (
+          <p className="border-t border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+            v{page.version} · {fmt(page.createdAt)} · {page.summary}
+          </p>
+        )}
+      </section>
     </div>
   );
 }
