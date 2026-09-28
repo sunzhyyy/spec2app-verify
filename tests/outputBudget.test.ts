@@ -19,11 +19,11 @@ function mockFetch(bodies: string[]) {
 const msgs = (r: Record<string, unknown>) => (r.messages as { role: string; content: string }[]);
 
 describe('webpage output budget', () => {
-  it('explicitly disables thinking and sets max_tokens 16384', async () => {
+  it('disables thinking via type and sets max_tokens 16384', async () => {
     const m = mockFetch([envelope(JSON.stringify(files), 'stop')]);
     const res = await handleGenerate(req(), env, m.f);
     expect(res.status).toBe(200);
-    expect(m.requests[0].thinking).toEqual({ reasoning_effort: 'none' });
+    expect(m.requests[0].thinking).toEqual({ type: 'disabled' });
     expect(m.requests[0].max_tokens).toBe(16384);
     expect(msgs(m.requests[0])[0].content).toBe(SYSTEM_PROMPT);
     expect(SYSTEM_PROMPT).toMatch(/no Markdown fences, no indentation/);
@@ -38,11 +38,26 @@ describe('webpage output budget', () => {
     expect(body.response.indexHtml).toContain('<main>x</main>');
     expect(m.calls).toHaveBeenCalledTimes(2);
     const retry = m.requests[1];
-    expect(retry.thinking).toEqual({ reasoning_effort: 'none' });
+    expect(retry.thinking).toEqual({ type: 'disabled' });
     expect(retry.max_tokens).toBe(16384);
     expect(msgs(retry).some((x) => x.content === COMPACT_RETRY_INSTRUCTION)).toBe(true);
     expect(JSON.stringify(retry)).not.toContain('TRUNCATED_MARKER');
     expect(JSON.stringify(retry)).not.toEqual(JSON.stringify(m.requests[0]));
+  });
+
+  it('never sends reasoning_effort on either attempt and reports safe diagnostics', async () => {
+    const m = mockFetch([envelope(TRUNCATED, 'length')]);
+    const res = await handleGenerate(req(), env, m.f);
+    const text = await res.text();
+    expect(m.calls).toHaveBeenCalledTimes(2);
+    for (const r of m.requests) {
+      expect(r.thinking).toEqual({ type: 'disabled' });
+      expect(JSON.stringify(r)).not.toContain('reasoning_effort');
+    }
+    const d = JSON.parse(text).detail.diagnostic;
+    expect(d.request).toMatchObject({ thinkingType: 'disabled', reasoningEffortPresent: false });
+    expect(text).not.toContain(env.AI_API_KEY);
+    expect(text.toLowerCase()).not.toContain('bearer');
   });
 
   it('never makes a third attempt when both replies are truncated', async () => {

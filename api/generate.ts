@@ -55,7 +55,7 @@ export function requestMeta(cfg: Record<string, unknown>, url: string) {
     streamValue: typeof cfg.stream === 'boolean' ? cfg.stream : null,
     responseFormatType: typeof rf?.type === 'string' ? rf.type : null,
     ...(th && typeof th.type === 'string' ? { thinkingType: th.type } : {}),
-    ...(th && typeof th.reasoning_effort === 'string' ? { thinkingReasoningEffort: th.reasoning_effort } : {}),
+    reasoningEffortPresent: 'reasoning_effort' in cfg || (!!th && 'reasoning_effort' in th),
     maxTokensPresent: typeof cfg.max_tokens === 'number',
     maxTokensValue: typeof cfg.max_tokens === 'number' ? cfg.max_tokens : null,
   };
@@ -133,8 +133,8 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     const timeoutMs = Math.max(Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS, opts.minTimeoutMs ?? 0);
     // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
     const maxTokens = Math.floor(Number(env.AI_MAX_TOKENS)) > 0 ? Math.floor(Number(env.AI_MAX_TOKENS)) : DEFAULT_MAX_TOKENS;
-    // Thinking is explicitly disabled so the whole output budget goes to the webpage JSON.
-    const baseConfig = { model, stream: false, temperature: 0.4, max_tokens: maxTokens, thinking: { reasoning_effort: 'none' as const } };
+    // DeepSeek thinking is disabled via thinking.type (no reasoning_effort) so the whole output budget goes to the webpage JSON.
+    const baseConfig = { model, stream: false, temperature: 0.4, max_tokens: maxTokens, thinking: { type: 'disabled' as const } };
     /** One provider attempt with its own AbortController timer; the timer is always cleared. The body is read exactly once as text. */
     const attempt = async (strict: boolean, withResponseFormat: boolean, compact = false) => {
       const requestConfig = withResponseFormat ? { ...baseConfig, response_format: { type: 'json_object' as const } } : baseConfig;
