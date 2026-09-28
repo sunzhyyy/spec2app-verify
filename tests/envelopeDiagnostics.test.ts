@@ -41,7 +41,7 @@ describe('safe provider envelope diagnostics', () => {
     expect(urls).toEqual(['https://api.deepseek.com/chat/completions', 'https://api.deepseek.com/chat/completions']);
     expect(body.detail.code).toBe('provider_invalid_response');
     expect(body.detail.diagnostic).toMatchObject({ choicesType: 'array', choicesCount: 0, firstChoiceType: 'missing', messagePresent: false, contentType: 'missing' });
-    expect(body.detail.diagnostic.request).toEqual({ requestUrl: 'https://api.deepseek.com/chat/completions', requestedModel: 'deepseek-chat', streamValue: false, responseFormatType: 'json_object', maxTokensPresent: true, maxTokensValue: 8192 });
+    expect(body.detail.diagnostic.request).toEqual({ requestUrl: 'https://api.deepseek.com/chat/completions', requestedModel: 'deepseek-chat', streamValue: false, responseFormatType: 'json_object', thinkingReasoningEffort: 'none', maxTokensPresent: true, maxTokensValue: 16384 });
     expectNoLeak(text, logs);
   });
 

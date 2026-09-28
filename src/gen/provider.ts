@@ -12,6 +12,11 @@ Output format: respond with exactly one valid json object and nothing else.
 - indexHtml must contain the complete standalone HTML document.
 Exact json output shape:
 {"title":"Generated application","summary":"One or two sentences describing the app.","indexHtml":"<!doctype html>\\n<html lang=\\"en\\">\\n<head>\\n<meta charset=\\"utf-8\\">\\n<title>Generated application</title>\\n<link rel=\\"stylesheet\\" href=\\"styles.css\\">\\n</head>\\n<body>\\n<main id=\\"app\\"></main>\\n<script src=\\"script.js\\"></script>\\n</body>\\n</html>","stylesCss":"body { margin: 0; }","scriptJs":"(async function () { /* app logic */ })();","readme":"# Generated application\\n\\nHow to use it.","generationNotes":"Key decisions in 1-3 sentences."}
+Compact output (required, the reply has a strict length budget):
+- Emit minified JSON: no Markdown fences, no indentation or pretty-printing, no prose outside the JSON object.
+- Keep HTML, CSS and JavaScript concise. Use no external libraries. Omit comments unless strictly necessary.
+- Scope: one compact webpage with one main interactive workflow. No oversized sample datasets (at most a few short sample items).
+- readme: at most 5 short lines. generationNotes: at most 2 short sentences.
 Rules:
 - indexHtml: a complete HTML5 document. Include <link rel="stylesheet" href="styles.css"> in <head> and <script src="script.js"></script> at the end of <body>. Do not put inline <script> or <style> blocks in indexHtml.
 - stylesCss: all CSS. scriptJs: all JavaScript as plain ES2020 (no modules, imports, frameworks, CDNs, external URLs or network requests).
@@ -26,6 +31,10 @@ Rules:
 
 export const STRICT_RETRY_INSTRUCTION =
   'Your previous reply could not be parsed. Reply again with ONE json object only, exactly matching the shape above with the seven string fields title, summary, indexHtml, stylesCss, scriptJs, readme, generationNotes. No code fences, no prose before or after, escape every newline and double quote inside string values. Keep it shorter so it is complete.';
+
+/** Retry instruction after finish_reason="length"; never carries the truncated output. */
+export const COMPACT_RETRY_INSTRUCTION =
+  'Your previous reply was cut off by the output length limit. Produce a NEW, much smaller version: ONE minified json object with the seven string fields title, summary, indexHtml, stylesCss, scriptJs, readme, generationNotes. No code fences, no indentation, no prose, no comments, no external libraries. Keep only the single main interactive workflow, minimal sample data, a 3-line readme and a 1-sentence generationNotes.';
 
 export type GenerationErrorCode =
   | 'timeout'
@@ -71,7 +80,7 @@ export interface GenerateRequestBody {
   currentFiles?: GeneratedFiles | null;
 }
 
-export function buildMessages(body: GenerateRequestBody, strict = false) {
+export function buildMessages(body: GenerateRequestBody, strict = false, compact = false) {
   const parts: string[] = [];
   const history = (body.history ?? []).slice(-6);
   if (history.length) parts.push(`Earlier prompts in this project (oldest first):\n${history.map((h) => `- ${h.slice(0, 500)}`).join('\n')}`);
@@ -86,7 +95,7 @@ export function buildMessages(body: GenerateRequestBody, strict = false) {
   return [
     { role: 'system' as const, content: SYSTEM_PROMPT },
     { role: 'user' as const, content: parts.join('\n\n') },
-    ...(strict ? [{ role: 'system' as const, content: STRICT_RETRY_INSTRUCTION }] : []),
+    ...(compact ? [{ role: 'system' as const, content: COMPACT_RETRY_INSTRUCTION }] : strict ? [{ role: 'system' as const, content: STRICT_RETRY_INSTRUCTION }] : []),
   ];
 }
 

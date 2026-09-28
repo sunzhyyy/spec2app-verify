@@ -52,7 +52,7 @@ describe('text-first provider body handling at the handler boundary', () => {
     expect(res.status).toBe(200);
     expect(body.response.indexHtml).toContain('BODY_HTML_MARKER');
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ stream: false, max_tokens: 8192, response_format: { type: 'json_object' } });
+    expect(requests[0]).toMatchObject({ stream: false, max_tokens: 16384, response_format: { type: 'json_object' } });
   });
 
   it('2 empty body -> provider_empty_response with safe body metadata after one compatibility retry', async () => {
@@ -104,7 +104,7 @@ describe('text-first provider body handling at the handler boundary', () => {
     expect(res.status).toBe(200);
     expect(requests).toHaveLength(2);
     expect(requests[1]).not.toHaveProperty('response_format');
-    expect(requests[1]).toMatchObject({ stream: false, max_tokens: 8192 });
+    expect(requests[1]).toMatchObject({ stream: false, max_tokens: 16384 });
     const retryMessages = (requests[1] as { messages: { content: string }[] }).messages;
     expect(retryMessages.at(-1)?.content).toMatch(/ONE json object only/);
     expect(retryMessages).toHaveLength(3);

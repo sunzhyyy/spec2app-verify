@@ -6,8 +6,8 @@ import { GenerationFailure, parseProviderEnvelope, type GenerationErrorCode, bui
 
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 const TIMEOUT_MS = Number(nodeEnv.AI_TIMEOUT_MS ?? 170_000);
-/** Output budget: DeepSeek's documented chat maximum; override with AI_MAX_TOKENS for models with larger limits. */
-const DEFAULT_MAX_TOKENS = 8192; // DeepSeek chat output ceiling; override with AI_MAX_TOKENS.
+/** Output budget for webpage generation; override with AI_MAX_TOKENS. */
+const DEFAULT_MAX_TOKENS = 16384; // Webpage output budget; override with AI_MAX_TOKENS.
 /** Failures that get exactly one retry. All occur only after an HTTP 200; 401/402/403/404/429, network and timeout are never retried. */
 const RETRYABLE = new Set<string>(['provider_empty_response', 'provider_empty_content', 'provider_invalid_json', 'provider_invalid_response', 'malformed_json', 'provider_output_truncated']);
 /** Body-level failures where the retry may omit response_format for compatibility. */
@@ -48,13 +48,14 @@ export function requestMeta(cfg: Record<string, unknown>, url: string) {
   let requestUrl = 'invalid';
   try { const u = new URL(url); requestUrl = `${u.origin}${u.pathname}`; } catch { /* invalid base url */ }
   const rf = cfg.response_format as { type?: unknown } | undefined;
-  const th = cfg.thinking as { type?: unknown } | undefined;
+  const th = cfg.thinking as { type?: unknown; reasoning_effort?: unknown } | undefined;
   return {
     requestUrl,
     requestedModel: typeof cfg.model === 'string' ? cfg.model.slice(0, 80) : null,
     streamValue: typeof cfg.stream === 'boolean' ? cfg.stream : null,
     responseFormatType: typeof rf?.type === 'string' ? rf.type : null,
     ...(th && typeof th.type === 'string' ? { thinkingType: th.type } : {}),
+    ...(th && typeof th.reasoning_effort === 'string' ? { thinkingReasoningEffort: th.reasoning_effort } : {}),
     maxTokensPresent: typeof cfg.max_tokens === 'number',
     maxTokensValue: typeof cfg.max_tokens === 'number' ? cfg.max_tokens : null,
   };
@@ -132,9 +133,10 @@ export async function handleGenerate(request: Request, env: Record<string, strin
     const timeoutMs = Math.max(Number(env.AI_TIMEOUT_MS ?? TIMEOUT_MS) || TIMEOUT_MS, opts.minTimeoutMs ?? 0);
     // Portable timeout: EdgeOne lacks AbortSignal.timeout(), so use AbortController + setTimeout everywhere.
     const maxTokens = Math.floor(Number(env.AI_MAX_TOKENS)) > 0 ? Math.floor(Number(env.AI_MAX_TOKENS)) : DEFAULT_MAX_TOKENS;
-    const baseConfig = { model, stream: false, temperature: 0.4, max_tokens: maxTokens };
+    // Thinking is explicitly disabled so the whole output budget goes to the webpage JSON.
+    const baseConfig = { model, stream: false, temperature: 0.4, max_tokens: maxTokens, thinking: { reasoning_effort: 'none' as const } };
     /** One provider attempt with its own AbortController timer; the timer is always cleared. The body is read exactly once as text. */
-    const attempt = async (strict: boolean, withResponseFormat: boolean) => {
+    const attempt = async (strict: boolean, withResponseFormat: boolean, compact = false) => {
       const requestConfig = withResponseFormat ? { ...baseConfig, response_format: { type: 'json_object' as const } } : baseConfig;
       const request = requestMeta(requestConfig, url);
       const controller = new AbortController();
@@ -152,7 +154,7 @@ export async function handleGenerate(request: Request, env: Record<string, strin
             ...(opts.extraInit ?? {}),
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-            body: JSON.stringify({ ...requestConfig, messages: buildMessages(body, strict) }),
+            body: JSON.stringify({ ...requestConfig, messages: buildMessages(body, strict, compact) }),
             signal: controller.signal,
           } as RequestInit);
         } catch (e) {
@@ -203,18 +205,20 @@ export async function handleGenerate(request: Request, env: Record<string, strin
       if (!(e instanceof GenerationFailure) || !RETRYABLE.has(e.code) || MAX_ATTEMPTS < 2) throw e;
       firstFailureCode = e.code;
       const compatibility = COMPAT_RETRY.has(e.code);
-      console.log({ stage: 'provider-retry', attemptNumber: 2, firstFailureCode, compatibilityRetry: compatibility, ...((e.extra?.diagnostic as object) ?? {}) });
+      // After finish_reason="length" the retry is never identical: compact instructions, thinking none, same budget, no truncated output.
+      const compact = e.code === 'provider_output_truncated';
+      console.log({ stage: 'provider-retry', attemptNumber: 2, firstFailureCode, compatibilityRetry: compatibility, compactRetry: compact, ...((e.extra?.diagnostic as object) ?? {}) });
       try {
-        files = await attempt(true, !compatibility);
+        files = await attempt(true, !compatibility, compact);
       } catch (retryError) {
         if (retryError instanceof GenerationFailure) {
-          const diagnostic = { ...((retryError.extra?.diagnostic as object) ?? {}), attemptNumber: 2, firstFailureCode, retryPerformed: true, retrySucceeded: false, compatibilityRetry: compatibility };
+          const diagnostic = { ...((retryError.extra?.diagnostic as object) ?? {}), attemptNumber: 2, firstFailureCode, retryPerformed: true, retrySucceeded: false, compatibilityRetry: compatibility, compactRetry: compact };
           retryError.extra = { ...retryError.extra, diagnostic };
           console.log({ stage: 'provider-retry-failed', code: retryError.code, ...diagnostic });
         }
         throw retryError;
       }
-      console.log({ stage: 'provider-retry-succeeded', attemptNumber: 2, firstFailureCode, retryPerformed: true, retrySucceeded: true, compatibilityRetry: compatibility });
+      console.log({ stage: 'provider-retry-succeeded', attemptNumber: 2, firstFailureCode, retryPerformed: true, retrySucceeded: true, compatibilityRetry: compatibility, compactRetry: compact });
     }
     const successPayload = {
       response: {
