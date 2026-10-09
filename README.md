@@ -61,6 +61,7 @@ Framework: Vite (React 18 + TS); functions: Node runtime (`api/generate.ts`). In
 - Generation takes 30–120 s, and the output quality depends on the model.
 - Generated pages cannot make network requests or load remote scripts.
 - Persistence is per browser.
+- Authentication is intentionally out of scope. The generator is public, Generate does not require sign-in, and projects and versions stay in browser-local storage. Managed OIDC sign-in was tried and then removed because it does not work on the EdgeOne custom-domain deployment.
 
 ## Node.js deployment (Zeabur or any Node host)
 

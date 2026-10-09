@@ -17,9 +17,6 @@ import {
   setAppState,
   type Workspace,
 } from '@/gen/store';
-import { AccountBar } from '@/components/AccountBar';
-import { useAuth } from '@/gen/auth/AuthProvider';
-import { useAccountProjects } from '@/gen/projects/useAccountProjects';
 
 const EXAMPLES = [
   'Create a todo board with priorities and due dates. Users can add, complete and delete tasks.',
@@ -66,9 +63,6 @@ export default function Index() {
 
   const project = ws.projects.find((p) => p.id === ws.selectedProjectId) ?? null;
   const page: PageResource | null = project?.versions.find((v) => v.id === project.selectedVersionId) ?? null;
-
-  const { user, signOut } = useAuth();
-  const { syncing } = useAccountProjects({ user, ws, commit, onNotice: setNotice });
 
   useEffect(() => {
     if (!busy) return;
@@ -167,7 +161,6 @@ export default function Index() {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900 lg:h-screen lg:flex-row">
       <aside className={`flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-52 lg:border-b-0 lg:border-r ${expanded ? 'hidden' : ''}`}>
-        <AccountBar email={user?.email ?? ''} syncing={syncing} onSignOut={() => void signOut()} />
         <div className="p-3">
           <Button className="w-full" onClick={newProject} disabled={busy}>
             + New Project
