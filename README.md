@@ -1,71 +1,71 @@
-# Spec2App Verify (draft)
+# AI Webpage Generator
 
-Spec2App Verify turns a natural-language requirement into a verified, data-driven mini app through a test-driven workflow. The principle is: tests define what done means.
+A general AI webpage generator that turns a natural-language idea into runnable HTML, CSS and JavaScript, previews it in a sandboxed iframe and preserves projects and versions across refreshes.
 
-**Status: Stage 2 engineering skeleton.** The core workflow is not implemented yet.
+- **Live Demo:** _<preview URL placeholder – set after publishing the brief-rebuild preview>_
+- **GitHub Repository:** _<repository URL>_
+- **Short Demo Guide:** open the app → click an example prompt → **Generate** (30–120 s) → interact with the page in the App Viewer → refresh the browser → the project, prompts, versions and in-app data are restored → type a follow-up change → **Apply change** creates v2 (v1 stays selectable).
 
-## Stack
-React 18, TypeScript, Vite, Tailwind, shadcn/ui, Zod, Vitest. The app is static and client-side only. Data is stored in localStorage.
+## Workflow
+Prompt → server endpoint → model writes `index.html`, `styles.css`, `script.js`, `README.md` as JSON → server validates → browser validates again → `PageResource` is created and saved → `previewHtml` runs in `<iframe sandbox="allow-scripts">`.
 
-## Setup
-```bash
-pnpm install
-cp .env.example .env   # optional; leave VITE_AI_ENDPOINT empty for Demo Mode
-pnpm dev               # http://localhost:5173
+## Server-side generation
+Two interchangeable endpoints share the same prompt and response schema:
+
+| Deployment | Route | Code | Provider |
+|---|---|---|---|
+| Atoms Cloud (workspace validation only; not part of this repository or the public deployment) | `POST /api/v1/generate/page` | Atoms workspace environment only, returns the same validated response schema | OpenAI-compatible provider if `AI_API_KEY` + `AI_BASE_URL` are set, otherwise the Atoms AI Hub model (`AI_MODEL`, default `gpt-5.4`) |
+| Vercel | `POST /api/generate` | `api/generate.ts`, `src/gen/provider.ts` | OpenAI-compatible (`AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`) |
+
+The request contains only `prompt`, compact `history` (earlier prompts) and `currentFiles` (for follow-ups). The response contains `title, summary, indexHtml, stylesCss, scriptJs, readme, generationNotes` plus `generationMode: "live"`, `providerInvoked: true`, `provider` and `receivedPrompt`. Malformed JSON, missing or empty files, Markdown fences and oversized files are rejected with a coded error (`timeout`, `quota_exhausted`, `provider_unavailable`, `malformed_json`, `schema_invalid`, `missing_files`, `empty_content`). No automatic retries are made.
+
+## Live versus fallback
+A version is `live` only when the server confirms that it invoked the provider for the exact prompt that was sent and the files passed validation. The viewer shows “awaiting render” until the iframe reports `PAGE_READY` for that exact version. Fallback examples (todo, mortgage, portfolio) appear only after a failure, require a click, are labelled **“Saved fallback example – no live model call”**, and are stored with `generationMode: "fallback"`.
+
+## PageResource
+`id, projectId, version, prompt, title, summary, indexHtml, stylesCss, scriptJs, readme, previewHtml, createdAt, generationMode, provider, kind (initial|followup), parentVersionId, renderVerified, generationNotes` — see `src/gen/core.ts`.
+
+## Sandbox and persistence bridge
+- The iframe uses `sandbox="allow-scripts"` only, with no `allow-same-origin`, so the generated page has an opaque origin and cannot read the parent DOM, host storage or credentials, and cannot navigate the parent. A CSP in `previewHtml` sets `connect-src 'none'`.
+- The generated page uses `await window.AppStorage.load()` and `window.AppStorage.save(state)`. Under the hood these send `{type:"LOAD_STATE"|"SAVE_STATE", projectId, versionId, …}` messages to the parent. The host checks that `event.source` is the current iframe, validates the message with a strict Zod schema, rejects payloads over 100 KB, and stores or returns state only for that project and version. The host replies with `STATE_LOADED`.
+
+## Host persistence
+localStorage key `ai-webpage-generator.workspace`, `schemaVersion: 1`: `{ projects[{prompts, versions(PageResource), selectedVersionId, createdAt, updatedAt}], selectedProjectId, appState{"projectId:versionId": {data, savedAt}} }`. Corrupted or incompatible data is backed up under `…corrupt-<ts>` and a fresh workspace is started. Data is stored only in this browser; there is no cross-device sync.
+
+## Follow-up editing
+After v1 exists, the input sends the instruction together with the current files. The new PageResource becomes v(n+1) with `parentVersionId`, and earlier versions stay in the Version selector.
+
+## Local setup
+```
+pnpm install --frozen-lockfile
+pnpm run lint && npx tsc -p tsconfig.app.json --noEmit && pnpm test && pnpm run build
 ```
 
-## Commands
-| Purpose | Command |
-|---|---|
-| Lint | `pnpm lint` |
-| Type check | `pnpm typecheck` |
-| Test | `pnpm test` |
-| Build | `pnpm build` (output in `dist/`) |
-| Preview build | `pnpm preview` |
+## Environment variables (server only; never `VITE_*`)
+`AI_API_KEY`, `AI_BASE_URL` (for example `https://api.openai.com/v1`), `AI_MODEL`, and optionally `AI_TIMEOUT_MS` / `AI_TIMEOUT_SECONDS`. Frontend build switch (not a secret): `VITE_GENERATION_TARGET=vercel` makes the UI call `/api/generate`.
 
-## Structure
-- `src/domain`: types and schemas
-- `src/engine`: generators, verifier, repair, versioning (planned)
-- `src/ai`: provider interface; Demo provider plus optional HTTP provider (planned)
-- `src/renderer`: bounded components that draw the mini app (planned)
-- `src/store`: persistence (planned)
-- `src/pages`: routes
-- `src/components/ui`: shadcn components
-- `tests`: Vitest suites
-- `.github/workflows/ci.yml`: CI (lint, typecheck, test, build)
+## EdgeOne Pages deployment (primary preview)
+- Framework/runtime: Vite + React static SPA; server route `functions/api/generate.ts` (EdgeOne Pages Function, `onRequestPost`) reusing the shared handler in `api/generate.ts`.
+- Install: `pnpm install --frozen-lockfile`; build: `pnpm run build`; output: `dist` (see `edgeone.json`).
+- Environment (EdgeOne Pages console, server side): `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`; build variable `VITE_GENERATION_TARGET=edgeone` (not a secret).
+- Deploy `brief-rebuild` as a separate preview project; do not replace the production deployment. Promote only after the P0 workflow passes on the preview URL and a human has reviewed it.
+- Not yet verified on a live EdgeOne deployment.
 
-## Security
-No secrets are stored in the repo or the browser. Live AI is optional and goes through your own server endpoint.
+## Vercel deployment
 
-## Deployment
-Any static host (Vercel, Netlify, GitHub Pages) can serve `dist/`.
+(Backup deployment target.)
+Framework: Vite (React 18 + TS); functions: Node runtime (`api/generate.ts`). Install command: `pnpm install --frozen-lockfile`. Build command: `pnpm run build`. Output directory: `dist`. Set `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` and `VITE_GENERATION_TARGET=vercel` for the **Preview** environment and deploy the `brief-rebuild` branch as a preview. Production promotion is manual (“Promote to Production”) and should happen only after the P0 checks pass on the preview URL.
 
-## Verification, persistence and export (Stage 3 §9–17)
-- **Persistence**: projects are stored in `localStorage` under `spec2app-verify:v1:store`. The data is versioned (`schemaVersion: 1`), checked with Zod when loaded, and passed through a migration step first. If stored data is corrupted or uses a newer version, the app starts safely with a warning. **Reset Spec2App data** removes only this app's keys. Data stays in this browser only.
-- **Versions**: each generation creates a `candidate` version with a parent link. Only a candidate that passes verification becomes `stable`. A failed candidate never replaces the stable version.
-- **Verification**: `src/engine/verify.ts` runs 21 deterministic checks. Each result is passed, failed or blocked, with its expected result, observed result, evidence, version and timestamp. Automatic repair is not implemented.
-- **Export**: **Export JSON** checks the export against `ExportSchema` and blocks it if it would include any credential or endpoint.
+## Known limitations
+- The Vercel path has only been tested with a mocked provider; it has not been deployed.
+- Generation takes 30–120 s, and the output quality depends on the model.
+- Generated pages cannot make network requests or load remote scripts.
+- Persistence is per browser.
+- Authentication is intentionally out of scope. The generator is public, Generate does not require sign-in, and projects and versions stay in browser-local storage. Managed OIDC sign-in was tried and then removed because it does not work on the EdgeOne custom-domain deployment.
 
-## Stage 4 – Bounded repair
+## Node.js deployment (Zeabur or any Node host)
 
-After a failed verification, the workspace shows a **Bounded repair** panel. The default is Deterministic Repair Mode, which makes no model call.
-
-1. **Propose repair.** This is available only when the latest report on the current candidate has failed or blocked checks, the approved tests are unchanged, the definition is valid, and fewer than 2 repairs have been applied.
-2. **Review.** Before anything changes, the panel shows the diagnosed cause, the affected definition paths, the expected improvement and the risk.
-3. **Apply as new candidate.** This creates a new version with `parentVersionId` pointing to the failed candidate. The stable version is never overwritten.
-4. **Run repair reverification.** This runs a targeted set of checks: the ones that failed before the repair, checks mapped to the changed paths, the mandatory core regression set (`CORE_REGRESSION_IDS`), and their prerequisites. Checks that are not re-run are listed as carried forward.
-
-Proposals are rejected before they are applied if any of the following is true: they are malformed, they change acceptance tests or their references, they touch paths unrelated to the failing checks or outside the repairable scope, they contain executable code, they remove required fields, actions, filters or metrics, or they fail schema validation.
-
-After reverification, each repair gets one of these results: `repaired`, `improved`, `no_improvement`, `repeated_failure` (same failure signature), `regression`, or `limit_reached`. Every result except `repaired` and `improved` stops the workflow. Limits: 2 repair attempts per approved baseline generation and 5 AI-assisted calls per project. An optional HTTP provider (`requestHttpRepair`) sends only a compact context and no secrets. Repair history is saved to localStorage and included in the validated JSON export (schema v2, `repair` section).
-
-Tests: `tests/repair.test.ts` covers scenarios A–E: constraint repair, bounded stop, regression, test immutability, and malformed or unavailable provider output.
-
-### Stage 4.1 – Repair safety invariants
-
-- Accepting a repair proposal only means it is within repair scope. It does **not** mean the candidate is valid or stable.
-- Incremental repair candidates may remain incomplete or failing. They stay `candidate`, and `stableVersionId` does not change.
-- Stable promotion requires all of the following: `AppDefinitionSchema` validity, complete capability invariants (`missingCapabilities()` is empty: fields, actions, filters, metrics, layout sections, test references, empty and no-results states), VC-22, and every selected affected and core-regression check passing.
-- Each export attempt records `proposalAccepted`, `candidateStructurallyValid`, `candidateVerificationPassed` and `promotedToStable` separately. Stop reports also include the remaining failed and blocked checks, the last stable version and a suggested next action.
-- A maximum of two repairs can be applied per approved baseline. The public Demo uses deterministic repair with no model call.
-- The browser-level repair interaction has not been validated manually. Coverage comes from automated tests (`tests/repair.test.ts`, `tests/repairSafety.test.ts`).
+- Server entry: `server/index.ts` (built to `dist-server/index.js`). It serves `dist`, exposes `POST /api/generate` through the same handler as Vercel/EdgeOne (`api/generate.ts`), answers `GET /healthz`, and falls back to `dist/index.html` for non-API routes.
+- Build command: `pnpm install --frozen-lockfile && pnpm run build`. Start command: `pnpm start` (`node dist-server/index.js`).
+- Environment: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` (server-side secrets) and `VITE_GENERATION_TARGET=node` (build-time, not a secret; must be present during `pnpm run build`).
+- Port and host: listens on `0.0.0.0` using the platform-assigned `PORT`; falls back to 3000 only when `PORT` is absent. The API key is never logged or returned.
